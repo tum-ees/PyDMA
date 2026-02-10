@@ -1,0 +1,46 @@
+{
+  "cu_name": "CU9",
+  "fitted_params": {
+    "alpha_an": 1.1004688697484617,
+    "beta_an": -0.0027139270407442015,
+    "alpha_ca": 1.3275358116035767,
+    "beta_ca": -0.312846085321139,
+    "gamma_blend2_an": null,
+    "gamma_blend2_ca": null,
+    "inhom_an": null,
+    "inhom_ca": null,
+    "utilization_an": 0.9087035785288263,
+    "utilization_ca": 0.7532753476473566,
+    "sto_init_an": 0.0024661552137904036,
+    "sto_init_ca": 0.7643407563196044,
+    "sto_window_an": [
+      0.0024661552137904036,
+      0.9111697337426168
+    ],
+    "sto_window_ca": [
+      0.7643407563196044,
+      0.011065408672247812
+    ]
+  },
+  "degradation_modes": {
+    "lam_anode": 0.12734278095540286,
+    "lam_cathode": 0.02899958674153432,
+    "lli": 0.18149153737402954,
+    "capacity_loss": 0.17791889300940691,
+    "lam_anode_blend1": 0.12734278095540286,
+    "lam_anode_blend2": 0.0,
+    "lam_cathode_blend1": 0.02899958674153432,
+    "lam_cathode_blend2": 0.0
+  },
+  "capacity": 3.6752844561254765,
+  "rmse_fit_region": 0.008211502457551126,
+  "rmse_full_range": 0.008211502457551126,
+  "rmse_dva": 1.5686960406301873,
+  "cost": 0.018764651208906698,
+  "rmse": 0.008211502457551126,
+  "n_accepted_runs": 2,
+  "n_total_runs": 2,
+  "is_accepted": true,
+  "status": "accepted",
+  "algorithm": "differential_evolution"
+}
