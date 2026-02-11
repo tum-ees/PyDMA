@@ -18,6 +18,7 @@ Conventions used in this module:
 
 from typing import Sequence
 import re
+import warnings
 import numpy as np
 from numpy.typing import NDArray
 import matplotlib.pyplot as plt
@@ -1111,7 +1112,9 @@ def plot_dma_result(
         show_cathode_blend=show_cathode_blend,
     )
 
-    plt.tight_layout()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        plt.tight_layout()
     return fig
 
 
@@ -1320,7 +1323,9 @@ def plot_aging_study(
         ax_rmse.grid(True, alpha=0.3)
         ax_rmse.tick_params(direction='out', length=0)
 
-    plt.tight_layout()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        plt.tight_layout()
     return fig
 
 
@@ -1427,7 +1432,9 @@ class DMAPlotter:
             title=labels[1],
         )
 
-        plt.tight_layout()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            plt.tight_layout()
         self._figures.append(fig)
         return fig
 
