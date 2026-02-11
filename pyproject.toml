@@ -7,7 +7,7 @@ name = "pydma"
 version = "0.1.0"
 description = "Battery Degradation Mode Analysis - Python implementation of TUM-EES DegradationModeAnalysis"
 readme = "README.md"
-license = {text = "MIT"}
+license = "BSD-3-Clause"
 authors = [
     {name = "TUM-EES", email = "mathias.rehm@tum.de"},
 ]
@@ -28,7 +28,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
