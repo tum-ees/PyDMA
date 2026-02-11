@@ -4,6 +4,11 @@
 
 **Python implementation of TUM-EES DegradationModeAnalysis framework**
 
+<!-- PyPI badge -->
+<a href="https://pypi.org/project/pydma/">
+  <img src="https://img.shields.io/pypi/v/pydma.svg" alt="PyPI">
+</a>
+
 <!-- environment and language -->
 <a href="https://www.python.org/">
   <img src="https://img.shields.io/badge/Platform-Python-blue.svg" alt="Python">
@@ -47,13 +52,13 @@ Where α scales capacity and β shifts the SOC window.
 
 ## ⚙️ Installation
 
-PyPI release is coming soon:
+Install from PyPI:
 
 ```bash
-# pip install pydma
+pip install pydma
 ```
 
-Install from source:
+Or install from source:
 
 ```bash
 git clone https://github.com/tum-ees/pydma.git
