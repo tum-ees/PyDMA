@@ -630,6 +630,25 @@ class AgingStudyResults:
         if self.reference_data is None:
             self.reference_data = ReferenceData.from_result(result)
 
+    def plot_degradation_modes(self, **kwargs):
+        """Plot degradation modes evolution over aging.
+
+        Convenience method that delegates to :func:`pydma.plot_aging_study`.
+
+        Parameters
+        ----------
+        **kwargs
+            Passed through to :func:`~pydma.visualization.plots.plot_aging_study`.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The figure.
+        """
+        from pydma.visualization.plots import plot_aging_study
+
+        return plot_aging_study(self, **kwargs)
+
     def get_degradation_dataframe(self) -> pd.DataFrame:
         """
         Get degradation modes as a pandas DataFrame.

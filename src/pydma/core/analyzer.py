@@ -32,7 +32,7 @@ Example
 >>> print(f"LLI: {result.degradation_modes.lli:.2%}")
 """
 
-from typing import Callable, Any
+from typing import Callable, Any, Dict, List, Tuple, Union
 from functools import partial
 import warnings
 import numpy as np
@@ -41,6 +41,7 @@ from numpy.typing import NDArray
 from pydma.utils.dma_config import DMAConfig
 from pydma.utils.results import (
     DMAResult,
+    AgingStudyResults,
     FittedParams,
     DegradationModes,
     ReferenceData,
@@ -968,6 +969,77 @@ class DMAAnalyzer:
         self._check_normalized_soc_warning()
 
         return result
+
+    def analyze_aging_study(
+        self,
+        pocv_data: Dict[str, Union[Tuple[NDArray, NDArray], Tuple[NDArray, NDArray, float]]],
+        efc_values: Union[Dict[str, float], List[float], None] = None,
+        progress_callback: Callable[[int, int, int], None] | None = None,
+        reset: bool = True,
+    ) -> AgingStudyResults:
+        """Run DMA on multiple check-ups from an aging study.
+
+        Convenience method that iterates over check-ups, calling
+        :meth:`analyze` for each one and collecting the results into
+        an :class:`AgingStudyResults` container.
+
+        Parameters
+        ----------
+        pocv_data : Dict[str, Tuple[NDArray, NDArray]] or Dict[str, Tuple[NDArray, NDArray, float]]
+            Dictionary mapping CU names (e.g. ``'CU1'``, ``'CU2'``) to
+            ``(capacity, voltage)`` tuples or ``(soc, voltage, capacity)``
+            tuples as returned by :func:`pydma.load_aging_study`.
+            Iteration order defines the CU sequence; Python 3.7+ dicts
+            preserve insertion order.
+        efc_values : Dict[str, float] or List[float], optional
+            Equivalent full cycle values for each CU. Can be a dict keyed
+            by CU name or a list aligned with ``pocv_data`` order.
+        progress_callback : Callable, optional
+            Passed to :meth:`analyze` for each CU.
+        reset : bool, optional
+            If ``True`` (default), call :meth:`reset_state` before the
+            first CU so it is treated as the reference.
+
+        Returns
+        -------
+        AgingStudyResults
+            Container with all per-CU results.
+
+        Examples
+        --------
+        >>> data = pydma.load_aging_study("./aging_data/")
+        >>> results = analyzer.analyze_aging_study(pocv_data=data)
+        >>> print(results['CU2'].degradation_modes.lli)
+        """
+        if reset:
+            self.reset_state()
+
+        study_results = AgingStudyResults()
+
+        for idx, (cu_name, data_tuple) in enumerate(pocv_data.items()):
+            if len(data_tuple) == 3:
+                cap, volt = data_tuple[0], data_tuple[1]
+            else:
+                cap, volt = data_tuple[0], data_tuple[1]
+
+            result = self.analyze(
+                measured_capacity=cap,
+                measured_voltage=volt,
+                progress_callback=progress_callback,
+            )
+            result.cu_name = cu_name
+
+            # Determine EFC value
+            efc = None
+            if efc_values is not None:
+                if isinstance(efc_values, dict):
+                    efc = efc_values.get(cu_name)
+                elif isinstance(efc_values, (list, tuple)) and idx < len(efc_values):
+                    efc = efc_values[idx]
+
+            study_results.add_result(result, efc=efc)
+
+        return study_results
 
     def compute_simulated_curves(
         self,
