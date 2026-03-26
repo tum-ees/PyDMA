@@ -81,8 +81,8 @@ import pydma
 from pydma import DMAAnalyzer, DMAConfig
 
 # Load your electrode OCP data
-anode_ocp = pydma.load_ocp("path/to/anode_ocp.csv")
-cathode_ocp = pydma.load_ocp("path/to/cathode_ocp.csv")
+anode = pydma.load_ocp("path/to/anode_ocp.csv", electrode_type="anode")
+cathode = pydma.load_ocp("path/to/cathode_ocp.csv", electrode_type="cathode")
 
 # Create analyzer with configuration
 config = DMAConfig(
@@ -93,20 +93,20 @@ config = DMAConfig(
 )
 
 analyzer = DMAAnalyzer(
-    anode_ocp=anode_ocp,
-    cathode_ocp=cathode_ocp,
     config=config,
+    anode=anode,
+    cathode=cathode,
 )
 
 # Run analysis on aging study data
 results = analyzer.analyze_aging_study(
-    pocv_data={"CU1": pocv_cu1, "CU2": pocv_cu2, ...},
+    pocv_data={"CU1": (cap_cu1, volt_cu1), "CU2": (cap_cu2, volt_cu2)},
 )
 
 # Access degradation modes
-print(f"LLI: {results.lam_results['CU2'].lli:.2%}")
-print(f"LAM_an: {results.lam_results['CU2'].lam_anode:.2%}")
-print(f"LAM_ca: {results.lam_results['CU2'].lam_cathode:.2%}")
+print(f"LLI: {results['CU2'].degradation_modes.lli:.2%}")
+print(f"LAM_an: {results['CU2'].degradation_modes.lam_anode:.2%}")
+print(f"LAM_ca: {results['CU2'].degradation_modes.lam_cathode:.2%}")
 
 # Plot results
 results.plot_degradation_modes()
@@ -119,16 +119,19 @@ results.plot_degradation_modes()
 Supports blended electrodes (e.g., Silicon-Graphite anodes):
 
 ```python
+from pydma import BlendElectrode
+
 config = DMAConfig(
     use_anode_blend=True,
     gamma_anode_blend2_upper=0.30,  # Max 30% silicon
 )
 
+si_gr_anode = BlendElectrode(blend1=graphite_ocp, blend2=silicon_ocp)
+
 analyzer = DMAAnalyzer(
-    anode_blend1_ocp=graphite_ocp,  # Primary: Graphite
-    anode_blend2_ocp=silicon_ocp,    # Secondary: Silicon
-    cathode_ocp=cathode_ocp,
     config=config,
+    anode=si_gr_anode,
+    cathode=cathode,
 )
 ```
 
@@ -171,13 +174,12 @@ config = DMAConfig(speed_preset="thorough")  # "fast", "medium", or "thorough"
 Generate silicon OCP from measured blend electrode data:
 
 ```python
-from pydma.silicon import generate_silicon_curve
+from pydma.silicon import generate_si_curve
 
-silicon_ocp = generate_silicon_curve(
-    blend_ocp=measured_blend_ocp,
-    graphite_ocp=graphite_reference,
+result = generate_si_curve(
+    blend_path="path/to/blend_ocp.mat",
+    graphite_path="path/to/graphite_ocp.mat",
     gamma_si=0.245,
-    direction="lithiation",
 )
 ```
 
