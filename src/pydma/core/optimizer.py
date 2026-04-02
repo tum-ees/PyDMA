@@ -290,6 +290,10 @@ class DMAOptimizer:
             else:
                 rejected_runs.append(run_result)
 
+            # Call progress callback (before built-in print so headers appear first)
+            if progress_callback is not None:
+                progress_callback(len(accepted_runs), len(rejected_runs), run_number)
+
             if self.config.print_progress:
                 status = "accepted" if run_result.rmse < rmse_threshold else "rejected"
                 rmse_mv = run_result.rmse * 1000.0
@@ -298,13 +302,9 @@ class DMAOptimizer:
                     f"[accepted={len(accepted_runs)}, rejected={len(rejected_runs)}]"
                 )
 
-            # Call progress callback
-            if progress_callback is not None:
-                progress_callback(len(accepted_runs), len(rejected_runs), run_number)
-
         # Find best result
         if accepted_runs:
-            best_run = min(accepted_runs, key=lambda r: r.cost)
+            best_run = min(accepted_runs, key=lambda r: r.rmse)
 
             # Compute statistics across accepted runs
             all_params = np.array([r.params for r in accepted_runs])
@@ -313,7 +313,7 @@ class DMAOptimizer:
         else:
             # Fall back to best rejected run if no accepted runs
             if rejected_runs:
-                best_run = min(rejected_runs, key=lambda r: r.cost)
+                best_run = min(rejected_runs, key=lambda r: r.rmse)
                 rmse_mv = best_run.rmse * 1000.0
                 warnings.warn(
                     f"No runs met RMSE threshold ({rmse_threshold:.6f} V). "

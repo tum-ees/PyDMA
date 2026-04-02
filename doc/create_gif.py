@@ -67,9 +67,9 @@ def _entry_number(path: Path) -> int:
 
 
 def _load_blend_electrodes(input_data_dir: Path) -> tuple[BlendElectrode, ElectrodeOCP]:
-    graphite_df = pd.read_csv(input_data_dir / "Graphite" / "Gr_Lithiation_Kuecher.csv")
+    graphite_df = pd.read_csv(input_data_dir / "Graphite" / "Gr_Lithiation_Rehm2026.csv")
     silicon_df = pd.read_csv(
-        input_data_dir / "Silicon" / "SiReconstr_Lithiation_Kuecher_P45B_Anode_0C03.csv"
+        input_data_dir / "Silicon" / "SiReconstr_Lithiation_Rehm2026_P45B_Anode_0C03.csv"
     )
     cathode = load_ocp(
         input_data_dir / "NCA" / "GITT_P45b_Cat_NCA_JN_VS_Coin_1_GITT__Extracted_Continuous_pOCP.csv",
@@ -80,7 +80,7 @@ def _load_blend_electrodes(input_data_dir: Path) -> tuple[BlendElectrode, Electr
     graphite = ElectrodeOCP(
         soc=graphite_df["normalizedCapacity"].to_numpy(),
         voltage=graphite_df["voltage"].to_numpy(),
-        name="Graphite (Kuecher)",
+        name="Graphite (Rehm2026)",
     )
     silicon = ElectrodeOCP(
         soc=silicon_df["normalizedCapacity"].to_numpy(),

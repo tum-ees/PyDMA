@@ -35,23 +35,18 @@ class SiliconCurveParams:
         For P45B cells, approximately 0.245.
     filter_input : bool
         Whether to apply LOWESS smoothing to input data.
-    smooth_bad_qs : bool
-        Whether to apply moving median to smooth discontinuities.
-    smooth_window : int
-        Window size for smoothing (must be odd).
+    monotone_filter : bool
+        Whether to enforce monotonicity via isotonic regression (PAV).
     """
 
     gamma_si: float
     filter_input: bool = True
-    smooth_bad_qs: bool = True
-    smooth_window: int = 71
+    monotone_filter: bool = True
 
     def __post_init__(self) -> None:
         """Validate parameters."""
         if not 0 < self.gamma_si < 1:
             raise ValueError(f"gamma_si must be between 0 and 1, got {self.gamma_si}")
-        if self.smooth_window % 2 == 0:
-            self.smooth_window += 1  # Must be odd
 
 
 @dataclass
@@ -274,6 +269,52 @@ def _trim_and_renorm(
     return voltage, capacity
 
 
+def _pav_isotonic(
+    q_raw: NDArray[np.floating],
+    direction: str = 'nondecreasing',
+) -> NDArray[np.floating]:
+    """Isotonic regression via Pool Adjacent Violators (PAV).
+
+    Enforces monotonicity with minimal L2 change.
+
+    Parameters
+    ----------
+    q_raw : NDArray
+        Input capacity values.
+    direction : str
+        'nondecreasing' or 'nonincreasing'.
+
+    Returns
+    -------
+    NDArray
+        Monotone capacity values.
+    """
+    q = q_raw.copy()
+    if direction == 'nonincreasing':
+        q = -q
+    n = len(q)
+    val = np.zeros(n)
+    sz = np.zeros(n, dtype=int)
+    nb = 0
+    for i in range(n):
+        nb += 1
+        val[nb - 1] = q[i]
+        sz[nb - 1] = 1
+        while nb > 1 and val[nb - 2] > val[nb - 1]:
+            total = sz[nb - 2] + sz[nb - 1]
+            val[nb - 2] = (val[nb - 2] * sz[nb - 2] + val[nb - 1] * sz[nb - 1]) / total
+            sz[nb - 2] = total
+            nb -= 1
+    result = np.empty(n)
+    idx = 0
+    for k in range(nb):
+        result[idx:idx + sz[k]] = val[k]
+        idx += sz[k]
+    if direction == 'nonincreasing':
+        result = -result
+    return result
+
+
 def generate_si_curve(
     blend_path: str | Path | None = None,
     graphite_path: str | Path | None = None,
@@ -281,8 +322,7 @@ def generate_si_curve(
     graphite_data: tuple[NDArray[np.floating], NDArray[np.floating]] | None = None,
     gamma_si: float = 0.245,
     filter_input: bool = True,
-    smooth_bad_qs: bool = True,
-    smooth_window: int = 71,
+    monotone_filter: bool = True,
 ) -> SiliconCurveResult:
     """Generate artificial silicon OCV curve from blend and graphite data.
 
@@ -305,10 +345,9 @@ def generate_si_curve(
         Silicon fraction in blend (0 < γ < 1), by default 0.245
     filter_input : bool, optional
         Whether to apply LOWESS smoothing, by default True
-    smooth_bad_qs : bool, optional
-        Whether to apply moving median smoothing, by default True
-    smooth_window : int, optional
-        Window size for smoothing, by default 71
+    monotone_filter : bool, optional
+        Whether to enforce monotonicity via isotonic regression (PAV),
+        by default True
 
     Returns
     -------
@@ -325,7 +364,7 @@ def generate_si_curve(
     >>> # From files
     >>> result = generate_si_curve(
     ...     blend_path='SiGr_blend.mat',
-    ...     graphite_path='Gr_Lithiation_Kuecher.mat',
+    ...     graphite_path='Gr_Lithiation_Rehm2026.mat',
     ...     gamma_si=0.245,
     ... )
     >>>
@@ -342,10 +381,6 @@ def generate_si_curve(
     # Validate gamma
     if not 0 < gamma_si < 1:
         raise ValueError(f"gamma_si must be between 0 and 1, got {gamma_si}")
-
-    # Ensure odd window
-    if smooth_window % 2 == 0:
-        smooth_window += 1
 
     # Load data
     if blend_data is not None:
@@ -380,9 +415,17 @@ def generate_si_curve(
     gr_v, gr_q = _trim_and_renorm(gr_v, gr_q, v_min, v_max)
     blend_v, blend_q = _trim_and_renorm(blend_v, blend_q, v_min, v_max)
 
-    # Create common voltage grid
+    # Sort by voltage ascending (required for np.interp)
+    gr_order = np.argsort(gr_v)
+    gr_v, gr_q = gr_v[gr_order], gr_q[gr_order]
+    blend_order = np.argsort(blend_v)
+    blend_v, blend_q = blend_v[blend_order], blend_q[blend_order]
+
+    # Create common voltage grid (use actual data range after trimming)
+    v_lo = max(gr_v.min(), blend_v.min())
+    v_hi = min(gr_v.max(), blend_v.max())
     n_points = max(len(gr_v), len(blend_v))
-    v_common = np.linspace(v_min, v_max, n_points)
+    v_common = np.linspace(v_lo, v_hi, n_points)
 
     # Interpolate to common grid
     q_gr = np.interp(v_common, gr_v, gr_q)
@@ -405,10 +448,12 @@ def generate_si_curve(
     # Clip to [0, 1]
     q_si = np.clip(q_si, 0, 1)
 
-    # Smooth if requested
-    if smooth_bad_qs:
-        from scipy.ndimage import median_filter
-        q_si = median_filter(q_si, size=smooth_window, mode='nearest')
+    # Enforce monotonicity via isotonic regression (PAV)
+    if monotone_filter:
+        if q_si[-1] < q_si[0]:
+            q_si = _pav_isotonic(q_si, 'nonincreasing')
+        else:
+            q_si = _pav_isotonic(q_si, 'nondecreasing')
 
     return SiliconCurveResult(
         voltage=v_common,
@@ -422,12 +467,12 @@ def generate_si_curve(
 
 
 # Convenience function for common graphite sources
-GraphiteSource = Literal['Kuecher', 'Schmitt', 'Hossain', 'Wetjen', 'Rehm']
+GraphiteSource = Literal['Rehm2026', 'Schmitt', 'Rehm2025', 'Hossain', 'Wetjen']
 LithDirection = Literal['lithiation', 'delithiation']
 
 
 def get_builtin_graphite_path(
-    source: GraphiteSource = 'Kuecher',
+    source: GraphiteSource = 'Rehm2026',
     direction: LithDirection = 'lithiation',
 ) -> Path | None:
     """Get path to built-in graphite reference data.
@@ -439,7 +484,7 @@ def get_builtin_graphite_path(
     Parameters
     ----------
     source : str
-        Graphite source: 'Kuecher', 'Schmitt', 'Hossain', 'Wetjen', 'Rehm'
+        Graphite source: 'Rehm2026', 'Schmitt', 'Rehm2025', 'Hossain', 'Wetjen'
     direction : str
         'lithiation' or 'delithiation'
 
