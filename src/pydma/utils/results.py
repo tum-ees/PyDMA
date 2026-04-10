@@ -133,10 +133,10 @@ class FittedParams:
     beta_an: float
     alpha_ca: float
     beta_ca: float
-    gamma_blend2_an: float = 0.0
-    gamma_blend2_ca: float = 0.0
-    inhom_an: float = 0.0
-    inhom_ca: float = 0.0
+    gamma_blend2_an: Optional[float] = 0.0
+    gamma_blend2_ca: Optional[float] = 0.0
+    inhom_an: Optional[float] = 0.0
+    inhom_ca: Optional[float] = 0.0
 
     # ============================================================
     # Derived stoichiometry properties for PyBaMM users
@@ -275,11 +275,12 @@ class FittedParams:
                 self.beta_an,
                 self.alpha_ca,
                 self.beta_ca,
-                self.gamma_blend2_an,
-                self.gamma_blend2_ca,
-                self.inhom_an,
-                self.inhom_ca,
-            ]
+                self.gamma_blend2_an if self.gamma_blend2_an is not None else 0.0,
+                self.gamma_blend2_ca if self.gamma_blend2_ca is not None else 0.0,
+                self.inhom_an if self.inhom_an is not None else 0.0,
+                self.inhom_ca if self.inhom_ca is not None else 0.0,
+            ],
+            dtype=float,
         )
 
     def to_dict(self) -> Dict[str, Any]:

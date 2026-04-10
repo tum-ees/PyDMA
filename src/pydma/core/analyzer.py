@@ -827,16 +827,7 @@ class DMAAnalyzer:
         # calculation. The degradation function expects:
         # params, capa_actual, capa_anode_init, capa_cathode_init,
         # capa_inventory_init.
-        param_array = np.array([
-            fitted_params.alpha_an,
-            fitted_params.beta_an,
-            fitted_params.alpha_ca,
-            fitted_params.beta_ca,
-            fitted_params.gamma_blend2_an or 0.0,
-            fitted_params.gamma_blend2_ca or 0.0,
-            fitted_params.inhom_an or 0.0,
-            fitted_params.inhom_ca or 0.0,
-        ])
+        param_array = fitted_params.to_array()
 
         # MATLAB behavior: first CU defines reference capacities from fitted params
         if self.reference_data is None:
@@ -1165,6 +1156,8 @@ class DMAAnalyzer:
 
         if reference_capacity is None:
             reference_capacity = self.reference_capacity
+        if reference_capacity is None and self.reference_data is not None:
+            reference_capacity = self.reference_data.reference_capacity
         if reference_capacity is None:
             raise ValueError("Reference capacity not set.")
 
@@ -1178,40 +1171,34 @@ class DMAAnalyzer:
             )
         capa_for_current = current_capacity
 
-        # LLI: capa_inventory = (alpha_ca + beta_ca - beta_an) * capa_act
-        capa_inventory_init = (
-            reference_params.alpha_ca + reference_params.beta_ca - reference_params.beta_an
-        ) * reference_capacity
-        capa_inventory_current = (
-            current_params.alpha_ca + current_params.beta_ca - current_params.beta_an
-        ) * capa_for_current
-        lli = (capa_inventory_init - capa_inventory_current) / capa_inventory_init
-
-        # LAM: capa_anode = alpha_anode * capa_act
-        capa_anode_init = reference_params.alpha_an * reference_capacity
-        capa_cathode_init = reference_params.alpha_ca * reference_capacity
-        capa_anode_current = current_params.alpha_an * capa_for_current
-        capa_cathode_current = current_params.alpha_ca * capa_for_current
-        lam_an = (
-            (capa_anode_init - capa_anode_current) / capa_anode_init
-            if capa_anode_init != 0 else 0.0
-        )
-        lam_ca = (
-            (capa_cathode_init - capa_cathode_current) / capa_cathode_init
-            if capa_cathode_init != 0 else 0.0
+        deg_result = calculate_degradation_modes(
+            params=current_params.to_array(),
+            capa_actual=capa_for_current,
+            capa_anode_init=reference_params.alpha_an * reference_capacity,
+            capa_cathode_init=reference_params.alpha_ca * reference_capacity,
+            capa_inventory_init=(
+                reference_params.alpha_ca + reference_params.beta_ca - reference_params.beta_an
+            )
+            * reference_capacity,
+            gamma_an_blend2_init=float(reference_params.gamma_blend2_an or 0.0),
+            gamma_ca_blend2_init=float(reference_params.gamma_blend2_ca or 0.0),
         )
 
         # Compute measured capacity loss when available
-        if current_capacity is not None:
+        if reference_capacity != 0:
             capacity_loss = 1.0 - (current_capacity / reference_capacity)
         else:
             capacity_loss = 0.0
 
         return DegradationModes(
-            lli=lli,
-            lam_an=lam_an,
-            lam_ca=lam_ca,
+            lli=deg_result.lli,
+            lam_anode=deg_result.lam_anode,
+            lam_cathode=deg_result.lam_cathode,
             capacity_loss=capacity_loss,
+            lam_anode_blend1=deg_result.lam_anode_blend1,
+            lam_anode_blend2=deg_result.lam_anode_blend2,
+            lam_cathode_blend1=deg_result.lam_cathode_blend1,
+            lam_cathode_blend2=deg_result.lam_cathode_blend2,
         )
 
     @property
@@ -1237,4 +1224,6 @@ class DMAAnalyzer:
         self._previous_inhom_ca = None
         self._is_first_cu = True
         self._last_result = None
+        self._capacity_history = []
+        self._normalized_soc_warning_issued = False
         return self
