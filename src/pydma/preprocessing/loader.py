@@ -7,7 +7,6 @@ from various file formats with automatic column name detection.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, Any, TYPE_CHECKING
 import numpy as np
@@ -64,6 +63,320 @@ CAPACITY_COLUMN_PATTERNS = [
     "max_ah_step",
 ]
 
+FULLCELL_X_COLUMN_PATTERNS = [
+    "ah_step",
+    "max_ah_step",
+    "maxahstep",
+    "soc",
+    "state_of_charge",
+    "stateofcharge",
+    "normalized_capacity",
+    "normalizedcapacity",
+    "norm_capacity",
+    "normcapacity",
+    "q_norm",
+    "qnorm",
+    "ah",
+    "q",
+    "capacity",
+    "capa",
+    "charge",
+    "x",
+]
+
+FULLCELL_CAPACITY_COLUMN_PATTERNS = [
+    "pocv_ch",
+    "pocv_dch",
+    "capacity",
+    "capa",
+    "charge_capacity",
+    "discharge_capacity",
+    "max_ah_step",
+    "maxahstep",
+    "ah",
+    "q",
+    "charge",
+]
+
+_DIRECTION_PATTERNS = {
+    "charge": [
+        "*pocv*ch*.csv",
+        "*pocv*charge*.csv",
+        "*pOCV*CH*.csv",
+        "*pOCV*charge*.csv",
+        "*charge*.csv",
+        "*CH*.csv",
+        "*pocv*.csv",
+        "*pOCV*.csv",
+    ],
+    "discharge": [
+        "*pocv*dch*.csv",
+        "*pocv*discharge*.csv",
+        "*pOCV*DCH*.csv",
+        "*pOCV*discharge*.csv",
+        "*discharge*.csv",
+        "*DCH*.csv",
+        "*pocv*.csv",
+        "*pOCV*.csv",
+    ],
+}
+
+
+def _normalize_name(name: Any) -> str:
+    """Normalize a key/column name for fuzzy matching."""
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _find_matching_name(names: List[str], patterns: List[str]) -> Optional[str]:
+    """Find the best matching name using exact match first, then safe substring match."""
+    normalized_names = [(name, _normalize_name(name)) for name in names]
+
+    for pattern in patterns:
+        normalized_pattern = _normalize_name(pattern)
+        for name, normalized_name in normalized_names:
+            if normalized_name == normalized_pattern:
+                return name
+
+    for pattern in patterns:
+        normalized_pattern = _normalize_name(pattern)
+        if len(normalized_pattern) <= 1:
+            continue
+        for name, normalized_name in normalized_names:
+            if normalized_pattern in normalized_name:
+                return name
+
+    return None
+
+
+def _extract_capacity_value(values: Any) -> Optional[float]:
+    """Extract a scalar capacity from a scalar, repeated series, or capacity trace."""
+    arr = np.asarray(values, dtype=np.float64).flatten()
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+    if arr.size == 1 or np.allclose(arr, arr[0]):
+        return float(arr[0])
+
+    span = float(arr.max() - arr.min())
+    if span > 0:
+        return span
+    return float(arr.max())
+
+
+def _coerce_mat_container(data: Any) -> Optional[Dict[str, Any]]:
+    """Convert MATLAB-loaded structs or records to plain Python dictionaries."""
+    if isinstance(data, dict):
+        return {str(k): v for k, v in data.items() if not str(k).startswith("__")}
+
+    fieldnames = getattr(data, "_fieldnames", None)
+    if fieldnames is not None:
+        return {str(name): getattr(data, name) for name in fieldnames}
+
+    if isinstance(data, np.void) and data.dtype.names:
+        return {str(name): data[name] for name in data.dtype.names}
+
+    if isinstance(data, np.ndarray):
+        if data.size == 1:
+            return _coerce_mat_container(data.item())
+        if data.dtype.names:
+            return {str(name): np.asarray(data[name]).squeeze() for name in data.dtype.names}
+        return None
+
+    return None
+
+
+def _iter_mat_candidates(data: Any):
+    """Breadth-first traversal over nested MATLAB containers."""
+    queue = [data]
+    seen_ids: set[int] = set()
+
+    while queue:
+        current = queue.pop(0)
+        current_id = id(current)
+        if current_id in seen_ids:
+            continue
+        seen_ids.add(current_id)
+        yield current
+
+        container = _coerce_mat_container(current)
+        if container is not None:
+            queue.extend(container.values())
+            continue
+
+        if isinstance(current, np.ndarray) and current.dtype == object:
+            queue.extend(np.ravel(current).tolist())
+        elif isinstance(current, (list, tuple)):
+            queue.extend(list(current))
+
+
+def _extract_table_rows(container: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Convert a MATLAB table-like dict of columns to a list of row dicts."""
+    if not container:
+        return []
+
+    lengths = {}
+    for key, value in container.items():
+        arr = np.asarray(value)
+        if arr.ndim == 0:
+            continue
+        lengths[key] = len(arr)
+
+    if not lengths:
+        return []
+
+    row_count = max(lengths.values())
+    if row_count <= 1:
+        return []
+
+    rows = []
+    for idx in range(row_count):
+        row: Dict[str, Any] = {}
+        for key, value in container.items():
+            arr = np.asarray(value)
+            if arr.ndim == 0:
+                row[key] = arr.item()
+            elif len(arr) == row_count:
+                row[key] = arr[idx]
+            else:
+                row[key] = value
+        rows.append(row)
+    return rows
+
+
+def _find_data_keys(mapping: Dict[str, Any], electrode_type: str) -> Tuple[Optional[str], Optional[str]]:
+    """Find SOC/capacity and voltage keys in a dict-like MATLAB container."""
+    keys = list(mapping.keys())
+
+    if electrode_type == "fullcell":
+        x_key = _find_matching_name(keys, FULLCELL_X_COLUMN_PATTERNS)
+        voltage_patterns = ["u", "voltage", "ocv", "uocv", "fullcellu", "cellvoltage"]
+    elif electrode_type in ("cathode", "cathodeBlend2"):
+        x_key = _find_matching_name(keys, SOC_COLUMN_PATTERNS)
+        voltage_patterns = ["uca", "u_ca", "ucathode", "u", "voltage", "ocv"]
+    else:
+        x_key = _find_matching_name(keys, SOC_COLUMN_PATTERNS)
+        voltage_patterns = ["uan", "u_an", "uanode", "u", "voltage", "ocv"]
+
+    voltage_key = _find_matching_name(keys, voltage_patterns)
+    return x_key, voltage_key
+
+
+def _extract_fullcell_capacity_from_mapping(mapping: Dict[str, Any], x_key: Optional[str]) -> Optional[float]:
+    """Extract total capacity from a full-cell data mapping when available."""
+    keys = list(mapping.keys())
+    capacity_key = _find_matching_name(keys, FULLCELL_CAPACITY_COLUMN_PATTERNS)
+    if capacity_key is not None and capacity_key != x_key:
+        return _extract_capacity_value(mapping[capacity_key])
+
+    if x_key is None:
+        return None
+
+    x_values = np.asarray(mapping[x_key], dtype=np.float64).flatten()
+    x_values = x_values[np.isfinite(x_values)]
+    if x_values.size == 0:
+        return None
+
+    span = float(x_values.max() - x_values.min())
+    if span > 1.0 + 1e-9:
+        return span
+    return None
+
+
+def _coerce_cu_name(value: Any) -> str:
+    """Normalize a CU identifier to the `CU<n>` style used by PyDMA."""
+    arr = np.asarray(value).flatten()
+    if arr.size == 0:
+        raise ValueError("Empty CU identifier encountered in aging-study data.")
+
+    scalar = arr[0]
+    if isinstance(scalar, bytes):
+        scalar = scalar.decode()
+    if isinstance(scalar, str):
+        text = scalar.strip()
+        return text if text.upper().startswith("CU") else f"CU{text}"
+
+    if isinstance(scalar, (np.integer, int)):
+        return f"CU{int(scalar)}"
+    if isinstance(scalar, (np.floating, float)) and float(scalar).is_integer():
+        return f"CU{int(scalar)}"
+
+    return f"CU{scalar}"
+
+
+def _cu_sort_key(value: str) -> tuple[int, str]:
+    """Natural sort key for CU labels such as CU1, CU2, CU10."""
+    normalized = _normalize_name(value)
+    digits = "".join(ch for ch in normalized if ch.isdigit())
+    return (int(digits), normalized) if digits else (10**9, normalized)
+
+
+def _extract_aging_study_from_mat(
+    mat_data: Dict[str, Any],
+    direction: str,
+) -> Dict[str, Tuple[np.ndarray, np.ndarray, Optional[float]]]:
+    """Extract multi-CU pOCV data from a single MATLAB file."""
+    results: Dict[str, Tuple[np.ndarray, np.ndarray, Optional[float]]] = {}
+    direction = direction.lower()
+
+    explicit_direction_keys = {
+        "charge": ["Testdata_pOCV_CH", "pOCV_CH", "charge", "Testdata_charge"],
+        "discharge": ["Testdata_pOCV_DCH", "pOCV_DCH", "discharge", "Testdata_discharge"],
+    }
+
+    for candidate in _iter_mat_candidates(mat_data):
+        container = _coerce_mat_container(candidate)
+        if container is None or not container:
+            continue
+
+        # Direct mapping: {CU1: <data>, CU2: <data>, ...}
+        direct_cu_keys = [
+            key for key in container.keys() if _normalize_name(key).startswith("cu")
+        ]
+        if direct_cu_keys:
+            parsed_any = False
+            for cu_key in sorted(direct_cu_keys, key=_cu_sort_key):
+                soc, voltage, capacity = _extract_soc_voltage_from_mat(container[cu_key], "fullcell")
+                results[_coerce_cu_name(cu_key)] = (soc, voltage, capacity)
+                parsed_any = True
+            if parsed_any:
+                return results
+
+        # Table-like dict of columns.
+        rows = _extract_table_rows(container)
+        if rows:
+            parsed_any = False
+            for row in rows:
+                row_container = _coerce_mat_container(row) or row
+                cu_key = _find_matching_name(list(row_container.keys()), ["CU", "cu"])
+                if cu_key is None:
+                    continue
+
+                data_key = _find_matching_name(
+                    list(row_container.keys()),
+                    explicit_direction_keys[direction],
+                )
+                if data_key is None:
+                    continue
+
+                soc, voltage, capacity = _extract_soc_voltage_from_mat(
+                    row_container[data_key],
+                    "fullcell",
+                )
+                if capacity is None:
+                    capacity = _extract_capacity_value(
+                        row_container.get("pOCV_CH" if direction == "charge" else "pOCV_DCH")
+                    )
+                results[_coerce_cu_name(row_container[cu_key])] = (soc, voltage, capacity)
+                parsed_any = True
+            if parsed_any:
+                return results
+
+    raise ValueError(
+        "Could not extract aging-study data from the MATLAB file. "
+        "Expected either CU-keyed entries (e.g. CU1, CU2, ...) or a table-like "
+        "structure with CU and Testdata_pOCV_* fields."
+    )
+
 
 def auto_detect_columns(
     df: pd.DataFrame,
@@ -96,46 +409,32 @@ def auto_detect_columns(
     DIFFERENCE FROM MATLAB: MATLAB's parse_data_input uses specific field
     names. This function provides flexible pattern matching.
     """
-    columns = [c.lower() for c in df.columns]
-    column_map = dict(zip(columns, df.columns))
+    columns = list(df.columns)
 
     result = {}
 
-    # Detect SOC column
-    soc_col = None
-    for pattern in SOC_COLUMN_PATTERNS:
-        for col in columns:
-            if pattern in col:
-                soc_col = column_map[col]
-                break
-        if soc_col:
-            break
+    # Detect x-axis column
+    if electrode_type == "fullcell":
+        x_patterns = FULLCELL_X_COLUMN_PATTERNS
+    else:
+        x_patterns = SOC_COLUMN_PATTERNS
+    soc_col = _find_matching_name(columns, x_patterns)
 
     if not soc_col:
         raise ValueError(
-            f"Could not detect SOC column. Looked for patterns: {SOC_COLUMN_PATTERNS}. "
+            f"Could not detect SOC/capacity column. Looked for patterns: {x_patterns}. "
             f"Available columns: {list(df.columns)}"
         )
     result["soc"] = soc_col
 
     # Detect voltage column based on electrode type
-    voltage_col = None
-
-    # Prioritize electrode-specific names
     if electrode_type in ("cathode", "cathodeBlend2"):
-        priority_patterns = ["uca", "u_ca", "ucathode"] + VOLTAGE_COLUMN_PATTERNS
+        priority_patterns = ["uca", "u_ca", "ucathode", "u", "voltage", "ocv", "ocp"]
     elif electrode_type in ("anode", "anodeBlend2"):
-        priority_patterns = ["uan", "u_an", "uanode"] + VOLTAGE_COLUMN_PATTERNS
+        priority_patterns = ["uan", "u_an", "uanode", "u", "voltage", "ocv", "ocp"]
     else:  # fullcell
-        priority_patterns = VOLTAGE_COLUMN_PATTERNS
-
-    for pattern in priority_patterns:
-        for col in columns:
-            if pattern in col:
-                voltage_col = column_map[col]
-                break
-        if voltage_col:
-            break
+        priority_patterns = ["u", "voltage", "ocv", "ocp", "uocv", "full_cell_voltage"]
+    voltage_col = _find_matching_name(columns, priority_patterns)
 
     if not voltage_col:
         raise ValueError(
@@ -145,19 +444,21 @@ def auto_detect_columns(
     result["voltage"] = voltage_col
 
     # Detect capacity column (optional)
-    for pattern in CAPACITY_COLUMN_PATTERNS:
-        for col in columns:
-            if pattern in col and col != result["soc"].lower():
-                result["capacity"] = column_map[col]
-                break
-        if "capacity" in result:
-            break
+    capacity_patterns = (
+        FULLCELL_CAPACITY_COLUMN_PATTERNS if electrode_type == "fullcell" else CAPACITY_COLUMN_PATTERNS
+    )
+    capacity_col = _find_matching_name(
+        [col for col in columns if col not in {result["soc"], result["voltage"]}],
+        capacity_patterns,
+    )
+    if capacity_col is not None:
+        result["capacity"] = capacity_col
 
     return result
 
 
 def _extract_soc_voltage_from_mat(
-    data: dict, electrode_type: str
+    data: Any, electrode_type: str
 ) -> Tuple[np.ndarray, np.ndarray, Optional[float]]:
     """
     Extract SOC and voltage from MATLAB .mat file structure.
@@ -174,65 +475,37 @@ def _extract_soc_voltage_from_mat(
     tuple
         (soc, voltage, capacity) arrays.
     """
-    # Try to find TestData sub-structure first
-    if "TestData" in data:
-        data = data["TestData"]
+    top_level = _coerce_mat_container(data) or {"data": data}
 
-    # Handle nested structures from MATLAB
-    if isinstance(data, np.ndarray) and data.dtype.names:
-        # Structured array - convert to dict
-        data = {name: data[name].flatten() for name in data.dtype.names}
+    for candidate in _iter_mat_candidates(top_level):
+        mapping = _coerce_mat_container(candidate)
+        if mapping is None:
+            continue
 
-    # Look for SOC column
-    soc = None
-    for key in data.keys():
-        key_lower = key.lower()
-        if any(p in key_lower for p in SOC_COLUMN_PATTERNS):
-            soc = np.asarray(data[key]).flatten()
-            break
+        if "TestData" in mapping:
+            nested = _coerce_mat_container(mapping["TestData"])
+            if nested is not None:
+                mapping = nested
 
-    if soc is None:
-        raise ValueError(f"Could not find SOC column in .mat file. Keys: {list(data.keys())}")
+        x_key, voltage_key = _find_data_keys(mapping, electrode_type)
+        if x_key is None or voltage_key is None:
+            continue
 
-    # Look for voltage column based on electrode type
-    voltage = None
-    if electrode_type in ("cathode", "cathodeBlend2"):
-        priority_keys = ["UCa", "U_Ca", "U"]
-    elif electrode_type in ("anode", "anodeBlend2"):
-        priority_keys = ["UAn", "U_An", "U"]
-    else:
-        priority_keys = ["U", "voltage", "OCV"]
+        soc = np.asarray(mapping[x_key], dtype=np.float64).flatten()
+        voltage = np.asarray(mapping[voltage_key], dtype=np.float64).flatten()
+        capacity = (
+            _extract_fullcell_capacity_from_mapping(mapping, x_key)
+            if electrode_type == "fullcell"
+            else _extract_capacity_value(
+                mapping.get(_find_matching_name(list(mapping.keys()), CAPACITY_COLUMN_PATTERNS))
+            )
+        )
+        return soc, voltage, capacity
 
-    for key in priority_keys:
-        if key in data:
-            voltage = np.asarray(data[key]).flatten()
-            break
-
-    if voltage is None:
-        # Fallback to pattern matching
-        for key in data.keys():
-            key_lower = key.lower()
-            if any(p in key_lower for p in VOLTAGE_COLUMN_PATTERNS):
-                voltage = np.asarray(data[key]).flatten()
-                break
-
-    if voltage is None:
-        raise ValueError(f"Could not find voltage column in .mat file. Keys: {list(data.keys())}")
-
-    # Look for capacity (optional)
-    capacity = None
-    for key in data.keys():
-        key_lower = key.lower()
-        if any(p in key_lower for p in CAPACITY_COLUMN_PATTERNS):
-            cap_data = np.asarray(data[key]).flatten()
-            if len(cap_data) == 1:
-                capacity = float(cap_data[0])
-            else:
-                # Take max as capacity
-                capacity = float(np.max(cap_data) - np.min(cap_data))
-            break
-
-    return soc, voltage, capacity
+    raise ValueError(
+        f"Could not find SOC/capacity and voltage columns in .mat file. "
+        f"Top-level keys: {list(top_level.keys())}"
+    )
 
 
 def load_ocp(
@@ -313,10 +586,7 @@ def load_ocp(
             else:
                 main_var = mat_data
 
-        soc, voltage, capacity = _extract_soc_voltage_from_mat(
-            mat_data if isinstance(main_var, dict) else {"data": main_var},
-            electrode_type
-        )
+        soc, voltage, capacity = _extract_soc_voltage_from_mat(main_var, electrode_type)
 
         # Create electrode directly for .mat files
         base_type = electrode_type.replace("Blend2", "")
@@ -344,7 +614,7 @@ def load_ocp(
 
     soc = df[soc_col].values
     voltage = df[voltage_col].values
-    capacity = df[capacity_col].values.max() if capacity_col else None
+    capacity = _extract_capacity_value(df[capacity_col].values) if capacity_col else None
 
     # Clean data - remove NaN
     valid = ~(np.isnan(soc) | np.isnan(voltage))
@@ -373,7 +643,7 @@ def load_pocv(
     capacity_col: Optional[str] = None,
     smooth: bool = False,
     smooth_window: int = 30,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> Tuple[np.ndarray, np.ndarray, Optional[float]]:
     """
     Load pseudo-OCV (pOCV) data from file.
 
@@ -395,7 +665,7 @@ def load_pocv(
     Returns
     -------
     tuple
-        (soc, voltage, capacity) where capacity is the total capacity in Ah.
+        (soc, voltage, capacity) where capacity is the total capacity in Ah when available.
 
     Examples
     --------
@@ -426,7 +696,7 @@ def load_pocv(
         if smooth:
             voltage = smooth_lowess(voltage, soc, frac=smooth_window / len(soc))
 
-        return soc, voltage, capacity or 1.0
+        return soc, voltage, capacity
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
@@ -447,14 +717,9 @@ def load_pocv(
 
     # Get capacity
     if capacity_col and capacity_col in df.columns:
-        capacity = df[capacity_col].max()
+        capacity = _extract_capacity_value(df[capacity_col].values)
     else:
-        # Estimate from SOC range
-        capacity = soc.max() - soc.min()
-        if capacity > 1:  # SOC might be in Ah, not normalized
-            pass
-        else:
-            capacity = 1.0  # Assume normalized
+        capacity = _extract_capacity_value(soc) if (np.nanmax(soc) - np.nanmin(soc)) > 1 else None
 
     if smooth:
         voltage = smooth_lowess(voltage, soc, frac=smooth_window / len(soc))
@@ -466,7 +731,7 @@ def load_aging_study(
     data_path: Union[str, Path],
     direction: str = "charge",
     cu_pattern: str = "CU{i}",
-) -> Dict[str, Tuple[np.ndarray, np.ndarray, float]]:
+) -> Dict[str, Tuple[np.ndarray, np.ndarray, Optional[float]]]:
     """
     Load multiple pOCV measurements from an aging study.
 
@@ -490,6 +755,9 @@ def load_aging_study(
     >>> soc, voltage, capacity = data["CU1"]
     """
     data_path = Path(data_path)
+    direction = direction.lower()
+    if direction not in _DIRECTION_PATTERNS:
+        raise ValueError(f"direction must be 'charge' or 'discharge', got {direction}")
     results = {}
 
     if data_path.is_file():
@@ -499,12 +767,12 @@ def load_aging_study(
                 raise ImportError("scipy is required to load .mat files")
 
             mat_data = loadmat(str(data_path), squeeze_me=True, struct_as_record=False)
-            # This would need specific parsing based on file structure
-            # For now, return empty - users should use load_pocv for each CU
-            raise NotImplementedError(
-                "Loading all CUs from single .mat file not yet implemented. "
-                "Please load each CU individually using load_pocv()."
-            )
+            mat_data = {k: v for k, v in mat_data.items() if not k.startswith("__")}
+            return _extract_aging_study_from_mat(mat_data, direction=direction)
+        raise NotImplementedError(
+            "Loading all CUs from a single non-MATLAB file is not implemented. "
+            "Please provide a directory of per-CU files or a MATLAB aging-study table."
+        )
     else:
         # Directory with CU subfolders
         i = 1
@@ -523,7 +791,7 @@ def load_aging_study(
 
             if cu_path.is_dir():
                 # Look for pOCV file in directory
-                for pattern in ["*pocv*.csv", "*pOCV*.csv", "*charge*.csv", "*discharge*.csv"]:
+                for pattern in _DIRECTION_PATTERNS[direction]:
                     files = list(cu_path.glob(pattern))
                     if files:
                         soc, voltage, capacity = load_pocv(files[0])

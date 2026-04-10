@@ -10,6 +10,8 @@ from typing import Literal, Optional, Tuple, List, Union
 import numpy as np
 from pydma.utils.roi import ROISpec, get_roi_outer_bounds
 
+SUPPORTED_ALGORITHMS = {"differential_evolution"}
+
 
 @dataclass
 class DMAConfig:
@@ -236,6 +238,15 @@ class DMAConfig:
         if self.direction not in ("charge", "discharge"):
             raise ValueError(f"direction must be 'charge' or 'discharge', got {self.direction}")
 
+        normalized_algorithm = self.algorithm.lower().replace("-", "_").replace(" ", "_")
+        if normalized_algorithm in {"de", "differentialevolution"}:
+            normalized_algorithm = "differential_evolution"
+        if normalized_algorithm not in SUPPORTED_ALGORITHMS:
+            raise ValueError(
+                f"algorithm must be one of {sorted(SUPPORTED_ALGORITHMS)}, got {self.algorithm}"
+            )
+        self.algorithm = normalized_algorithm
+
         if self.workers < -1 or self.workers == 0:
             raise ValueError(f"workers must be -1 (all CPUs) or >= 1, got {self.workers}")
 
@@ -260,6 +271,16 @@ class DMAConfig:
         if self.speed_preset not in ("fast", "medium", "thorough"):
             raise ValueError(
                 f"speed_preset must be 'fast', 'medium', or 'thorough', got {self.speed_preset}"
+            )
+
+        if not 0.0 <= self.gamma_anode_blend2_init <= self.gamma_anode_blend2_upper:
+            raise ValueError(
+                "gamma_anode_blend2_init must be within [0, gamma_anode_blend2_upper]"
+            )
+
+        if not 0.0 <= self.gamma_cathode_blend2_init <= self.gamma_cathode_blend2_upper:
+            raise ValueError(
+                "gamma_cathode_blend2_init must be within [0, gamma_cathode_blend2_upper]"
             )
 
     def get_solver_options(self) -> dict:
@@ -427,6 +448,29 @@ class DMAConfig:
             ub[7] = 0.0
 
         return lb, ub
+
+    def get_initial_guess(
+        self,
+        inhom_an_prev: Optional[float] = None,
+        inhom_ca_prev: Optional[float] = None,
+    ) -> np.ndarray:
+        """Get a MATLAB-style initial guess vector clipped to active bounds."""
+        if self.use_anode_blend:
+            init = np.array([1.05, -0.005, 1.1, -0.01, 0.0, 0.0, 0.03, 0.03], dtype=float)
+        else:
+            init = np.array([1.2, 0.0, 1.1, -0.1, 0.0, 0.0, 0.03, 0.03], dtype=float)
+
+        if self.use_anode_blend:
+            init[4] = self.gamma_anode_blend2_init
+        if self.use_cathode_blend:
+            init[5] = self.gamma_cathode_blend2_init
+        if not self.allow_anode_inhomogeneity:
+            init[6] = 0.0
+        if not self.allow_cathode_inhomogeneity:
+            init[7] = 0.0
+
+        lb, ub = self.get_full_bounds(inhom_an_prev=inhom_an_prev, inhom_ca_prev=inhom_ca_prev)
+        return np.clip(init, lb, ub)
 
     def calculate_roi_bounds(self) -> Tuple[float, float]:
         """

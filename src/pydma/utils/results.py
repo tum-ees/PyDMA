@@ -559,8 +559,8 @@ class ReferenceData:
             capa_anode_init=capa_anode,
             capa_cathode_init=capa_cathode,
             capa_inventory_init=capa_inventory,
-            gamma_an_blend2_init=params.gamma_blend2_an,
-            gamma_ca_blend2_init=params.gamma_blend2_ca,
+            gamma_an_blend2_init=float(params.gamma_blend2_an or 0.0),
+            gamma_ca_blend2_init=float(params.gamma_blend2_ca or 0.0),
             reference_capacity=capa,
         )
 

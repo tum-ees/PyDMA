@@ -57,6 +57,8 @@ from pydma.core.objectives import (
     objective_with_penalty,
     calculate_full_cell_ocv,
     fit_ocv,
+    fit_dva,
+    fit_ica,
     PreviousLAM,
     ReferenceData as ObjectiveRefData,
     PenaltyConfig,
@@ -213,8 +215,10 @@ class DMAAnalyzer:
                 "This suggests normalized SOC data is being used instead of actual Ah capacity. "
                 "LAM calculations may be INCORRECT because they won't reflect "
                 "actual capacity fade. "
-                "To fix: Either provide measured_capacity in Ah (not normalized SOC), "
-                "or set reference_capacity to the actual cell capacity in Ah.",
+                "To fix: either provide measured_capacity in Ah directly, or pass "
+                "actual_capacity for each CU (for example via load_aging_study() "
+                "when the source file contains total capacity). "
+                "Setting only reference_capacity does not fix LAM.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -499,6 +503,15 @@ class DMAAnalyzer:
         )
         if cap_span <= 0:
             raise ValueError("Measured capacity must span a non-zero range.")
+        if was_corrected:
+            warnings.warn(
+                "Reoriented the full-cell axis to increasing SOC internally. "
+                f"This is compatible with config.direction='{self.config.direction}', "
+                "but it usually means the input was provided on a discharge-oriented "
+                "capacity axis rather than an increasing SOC axis.",
+                UserWarning,
+                stacklevel=3,
+            )
 
         # meas_capacity is already normalized to [0, 1] by
         # _validate_fullcell_ocv_convention.
@@ -528,7 +541,8 @@ class DMAAnalyzer:
         else:
             meas_voltage_uniform = self._interp_linear_extrap(q_sorted, v_sorted, q_uniform)
 
-        q0 = float(q_raw.max() - q_raw.min())
+        # MATLAB Q0 is the raw full-cell capacity span before normalization.
+        q0 = cap_span
 
         return q_uniform, meas_voltage_uniform, q0, cap_span
 
@@ -654,6 +668,7 @@ class DMAAnalyzer:
         anode: "ElectrodeOCP | BlendElectrode | None" = None,
         cathode: "ElectrodeOCP | BlendElectrode | None" = None,
         reference_capacity: float | None = None,
+        actual_capacity: float | None = None,
         progress_callback: Callable[[int, int, int], None] | None = None,
         **kwargs: Any,
     ) -> DMAResult:
@@ -679,6 +694,9 @@ class DMAAnalyzer:
         reference_capacity : float, optional
             Reference capacity for degradation calculations
             (overrides set_reference_capacity())
+        actual_capacity : float, optional
+            Actual full-cell capacity for this CU in Ah. Use this when
+            measured_capacity is a normalized 0-1 SOC axis instead of Ah.
         progress_callback : Callable, optional
             Called after each optimization run with
             (accepted_count, rejected_count, run_number)
@@ -721,6 +739,12 @@ class DMAAnalyzer:
             measured_capacity,
             measured_voltage,
         )
+        if actual_capacity is not None:
+            actual_capacity = float(actual_capacity)
+            if actual_capacity <= 0:
+                raise ValueError(f"actual_capacity must be positive, got {actual_capacity}")
+        effective_capacity = actual_capacity if actual_capacity is not None else cap_span
+        q0 = effective_capacity
 
         # Prepare electrodes to match MATLAB preprocessing
         anode = self._prepare_electrode(self.anode)
@@ -755,7 +779,7 @@ class DMAAnalyzer:
         # Create objective function (with penalty constraints if not first CU)
         objective = self._create_objective(
             q, meas_voltage, meas_dva, meas_ica, dva_roi_mask, ica_roi_mask, q0,
-            actual_capacity=cap_span,
+            actual_capacity=effective_capacity,
             anode=anode,
             cathode=cathode,
             anode_is_blend=anode_is_blend,
@@ -800,10 +824,17 @@ class DMAAnalyzer:
             )
             bounds = list(zip(lb, ub))
 
+        initial_guess = self.config.get_initial_guess(
+            inhom_an_prev=self._previous_inhom_an,
+            inhom_ca_prev=self._previous_inhom_ca,
+        )
+        initial_guess = np.clip(initial_guess, lb, ub)
+
         optimizer = DMAOptimizer(self.config, objective, bounds, rmse_fn=rmse_fn)
 
         opt_result: MultiRunResult = optimizer.run(
             progress_callback=progress_callback,
+            x0=initial_guess,
             **kwargs,
         )
 
@@ -821,7 +852,7 @@ class DMAAnalyzer:
         )
 
         # Compute degradation modes
-        actual_capacity = cap_span
+        actual_capacity = effective_capacity
 
         # Convert fitted params to parameter array for degradation
         # calculation. The degradation function expects:
@@ -891,9 +922,54 @@ class DMAAnalyzer:
         reference_data = self.reference_data
 
         # Compute fit quality metrics
-        fit_ocv_mse = opt_result.best_cost / 3.0  # Approximate split
-        fit_dva_mse = opt_result.best_cost / 3.0
-        fit_ica_mse = opt_result.best_cost / 3.0
+        fit_ocv_mse = (
+            fit_ocv(
+                param_array,
+                anode,
+                cathode,
+                meas_voltage,
+                q,
+                self.config.roi_ocv_min,
+                self.config.roi_ocv_max,
+                anode_is_blend,
+                cathode_is_blend,
+                61,
+            )
+            if self.config.weight_ocv > 0
+            else 0.0
+        )
+        fit_dva_mse = (
+            fit_dva(
+                param_array,
+                anode,
+                cathode,
+                meas_dva,
+                q,
+                dva_roi_mask,
+                q0,
+                anode_is_blend,
+                cathode_is_blend,
+                61,
+            )
+            if self.config.weight_dva > 0
+            else 0.0
+        )
+        fit_ica_mse = (
+            fit_ica(
+                param_array,
+                anode,
+                cathode,
+                meas_ica,
+                q,
+                ica_roi_mask,
+                q0,
+                anode_is_blend,
+                cathode_is_blend,
+                61,
+            )
+            if self.config.weight_ica > 0
+            else 0.0
+        )
 
         # Calculate RMSE values matching MATLAB (calculate_RMSE.m)
         # Compute reconstructed OCV for RMSE calculation
@@ -913,6 +989,10 @@ class DMAAnalyzer:
         # no Q0, so the comparison is on consistent scales)
         reconstructed_dva_on_q = np.interp(q, sim_curves['capacity'], sim_curves['dva'])
         rmse_dva = np.sqrt(calculate_mse(display_dva_measured, reconstructed_dva_on_q))
+        is_accepted = opt_result.best_is_accepted and (
+            opt_result.best_rmse < self.config.rmse_threshold
+        )
+        status = "accepted" if is_accepted else "rejected_above_threshold"
 
         # Create result
         result = DMAResult(
@@ -950,6 +1030,9 @@ class DMAAnalyzer:
             cathode_soc=sim_curves['cathode_soc'],
             cathode_potential=sim_curves['cathode_voltage'],
             capacity=actual_capacity,
+            is_accepted=is_accepted,
+            status=status,
+            algorithm=self.config.algorithm,
         )
 
         # Store for later access
@@ -963,7 +1046,13 @@ class DMAAnalyzer:
 
     def analyze_aging_study(
         self,
-        pocv_data: Dict[str, Union[Tuple[NDArray, NDArray], Tuple[NDArray, NDArray, float]]],
+        pocv_data: Dict[
+            str,
+            Union[
+                Tuple[NDArray, NDArray],
+                Tuple[NDArray, NDArray, float | None],
+            ],
+        ],
         efc_values: Union[Dict[str, float], List[float], None] = None,
         progress_callback: Callable[[int, int, int], None] | None = None,
         reset: bool = True,
@@ -1009,13 +1098,26 @@ class DMAAnalyzer:
 
         for idx, (cu_name, data_tuple) in enumerate(pocv_data.items()):
             if len(data_tuple) == 3:
-                cap, volt = data_tuple[0], data_tuple[1]
+                cap, volt, actual_capacity = data_tuple
+                if actual_capacity is None:
+                    raise ValueError(
+                        f"{cu_name} does not include an actual capacity value. "
+                        "When measured_capacity is normalized SOC, PyDMA needs the "
+                        "real Ah capacity to compute LAM correctly."
+                    )
+            elif len(data_tuple) == 2:
+                cap, volt = data_tuple
+                actual_capacity = None
             else:
-                cap, volt = data_tuple[0], data_tuple[1]
+                raise ValueError(
+                    f"{cu_name} must be a 2-tuple (capacity, voltage) or "
+                    f"3-tuple (capacity, voltage, actual_capacity), got {len(data_tuple)} items."
+                )
 
             result = self.analyze(
                 measured_capacity=cap,
                 measured_voltage=volt,
+                actual_capacity=actual_capacity,
                 progress_callback=progress_callback,
             )
             result.cu_name = cu_name

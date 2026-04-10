@@ -90,6 +90,11 @@ class MultiRunResult:
             return 0.0
         return self.n_accepted / self.n_total
 
+    @property
+    def best_is_accepted(self) -> bool:
+        """Whether the selected best run met the RMSE threshold."""
+        return self.n_accepted > 0
+
 
 class DMAOptimizer:
     """Optimizer for DMA parameter fitting.
