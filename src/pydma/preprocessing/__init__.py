@@ -1,6 +1,6 @@
 """Preprocessing modules package."""
 
-from pydma.preprocessing.loader import load_ocp, load_pocv, auto_detect_columns
+from pydma.preprocessing.loader import load_ocp, load_pocv, load_aging_study, auto_detect_columns
 from pydma.preprocessing.smoother import (
     smooth_lowess,
     smooth_savgol,
@@ -11,6 +11,7 @@ from pydma.preprocessing.smoother import (
 __all__ = [
     "load_ocp",
     "load_pocv",
+    "load_aging_study",
     "auto_detect_columns",
     "smooth_lowess",
     "smooth_savgol",

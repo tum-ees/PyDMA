@@ -99,9 +99,8 @@ analyzer = DMAAnalyzer(
 )
 
 # Run analysis on aging study data
-results = analyzer.analyze_aging_study(
-    pocv_data={"CU1": (cap_cu1, volt_cu1), "CU2": (cap_cu2, volt_cu2)},
-)
+# The analyzer uses config.direction when loading the study.
+results = analyzer.analyze_aging_study("path/to/aging_data")
 
 # Access degradation modes
 print(f"LLI: {results['CU2'].degradation_modes.lli:.2%}")

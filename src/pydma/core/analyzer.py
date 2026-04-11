@@ -32,6 +32,7 @@ Example
 >>> print(f"LLI: {result.degradation_modes.lli:.2%}")
 """
 
+from pathlib import Path
 from typing import Callable, Any, Dict, List, Tuple, Union
 from functools import partial
 import warnings
@@ -65,6 +66,7 @@ from pydma.core.objectives import (
     _interp1_linear_fill0,
 )
 from pydma.core.optimizer import DMAOptimizer, MultiRunResult
+from pydma.preprocessing.loader import load_aging_study as load_aging_study_data
 
 
 class DMAAnalyzer:
@@ -129,6 +131,7 @@ class DMAAnalyzer:
         self._is_first_cu: bool = True  # Track if this is the first CU
         self._capacity_history: list[float] = []  # Track capacity across CUs for warning
         self._normalized_soc_warning_issued: bool = False  # Only warn once
+        self._reorientation_warning_issued: bool = False  # Only warn once
 
     def set_anode(
         self,
@@ -503,7 +506,8 @@ class DMAAnalyzer:
         )
         if cap_span <= 0:
             raise ValueError("Measured capacity must span a non-zero range.")
-        if was_corrected:
+        if was_corrected and not self._reorientation_warning_issued:
+            self._reorientation_warning_issued = True
             warnings.warn(
                 "Reoriented the full-cell axis to increasing SOC internally. "
                 f"This is compatible with config.direction='{self.config.direction}', "
@@ -828,7 +832,6 @@ class DMAAnalyzer:
             inhom_an_prev=self._previous_inhom_an,
             inhom_ca_prev=self._previous_inhom_ca,
         )
-        initial_guess = np.clip(initial_guess, lb, ub)
 
         optimizer = DMAOptimizer(self.config, objective, bounds, rmse_fn=rmse_fn)
 
@@ -921,7 +924,9 @@ class DMAAnalyzer:
         # Store reference data (first CU) for downstream use
         reference_data = self.reference_data
 
-        # Compute fit quality metrics
+        # Recompute per-component fit metrics on the best parameter vector.
+        # These are unweighted diagnostics, so they are not a decomposition of
+        # opt_result.best_cost when the objective uses weights or penalties.
         fit_ocv_mse = (
             fit_ocv(
                 param_array,
@@ -1046,13 +1051,17 @@ class DMAAnalyzer:
 
     def analyze_aging_study(
         self,
-        pocv_data: Dict[
-            str,
-            Union[
-                Tuple[NDArray, NDArray],
-                Tuple[NDArray, NDArray, float | None],
-            ],
-        ],
+        pocv_data: (
+            Dict[
+                str,
+                Union[
+                    Tuple[NDArray, NDArray],
+                    Tuple[NDArray, NDArray, float | None],
+                ],
+            ]
+            | str
+            | Path
+        ),
         efc_values: Union[Dict[str, float], List[float], None] = None,
         progress_callback: Callable[[int, int, int], None] | None = None,
         reset: bool = True,
@@ -1065,12 +1074,15 @@ class DMAAnalyzer:
 
         Parameters
         ----------
-        pocv_data : Dict[str, Tuple[NDArray, NDArray]] or Dict[str, Tuple[NDArray, NDArray, float]]
-            Dictionary mapping CU names (e.g. ``'CU1'``, ``'CU2'``) to
-            ``(capacity, voltage)`` tuples or ``(soc, voltage, capacity)``
-            tuples as returned by :func:`pydma.load_aging_study`.
-            Iteration order defines the CU sequence; Python 3.7+ dicts
-            preserve insertion order.
+        pocv_data : dict or path-like
+            Either a dictionary mapping CU names (e.g. ``'CU1'``, ``'CU2'``)
+            to ``(capacity, voltage)`` tuples or
+            ``(soc, voltage, actual_capacity)`` tuples, or a path to an
+            aging-study directory / MATLAB file. When a path is provided,
+            PyDMA calls :func:`pydma.load_aging_study` with
+            ``direction=self.config.direction``. For aging studies, 3-tuples
+            are preferred because they remove ambiguity between normalized
+            SOC and real Ah capacity axes.
         efc_values : Dict[str, float] or List[float], optional
             Equivalent full cycle values for each CU. Can be a dict keyed
             by CU name or a list aligned with ``pocv_data`` order.
@@ -1087,12 +1099,16 @@ class DMAAnalyzer:
 
         Examples
         --------
-        >>> data = pydma.load_aging_study("./aging_data/")
-        >>> results = analyzer.analyze_aging_study(pocv_data=data)
+        >>> results = analyzer.analyze_aging_study("./aging_data/")
         >>> print(results['CU2'].degradation_modes.lli)
         """
         if reset:
             self.reset_state()
+
+        if isinstance(pocv_data, (str, Path)):
+            pocv_data = self.load_aging_study(pocv_data)
+
+        self._check_aging_study_capacity_inputs(pocv_data)
 
         study_results = AgingStudyResults()
 
@@ -1133,6 +1149,67 @@ class DMAAnalyzer:
             study_results.add_result(result, efc=efc)
 
         return study_results
+
+    def load_aging_study(
+        self,
+        data_path: str | Path,
+        cu_pattern: str = "CU{i}",
+    ) -> Dict[str, Tuple[NDArray[np.floating], NDArray[np.floating], float | None]]:
+        """Load an aging study using the analyzer's configured direction."""
+        return load_aging_study_data(
+            data_path,
+            direction=self.config.direction,
+            cu_pattern=cu_pattern,
+        )
+
+    def _check_aging_study_capacity_inputs(
+        self,
+        pocv_data: Dict[str, Tuple[Any, ...]],
+    ) -> None:
+        """Warn or fail on ambiguous aging-study inputs without actual capacities."""
+        two_tuple_cus: list[str] = []
+        normalized_like_two_tuple_cus: list[str] = []
+
+        for cu_name, data_tuple in pocv_data.items():
+            if len(data_tuple) != 2:
+                continue
+
+            two_tuple_cus.append(cu_name)
+            capacity_axis = np.asarray(data_tuple[0], dtype=np.float64).flatten()
+            capacity_axis = capacity_axis[np.isfinite(capacity_axis)]
+            if capacity_axis.size < 2:
+                continue
+
+            cap_min = float(capacity_axis.min())
+            cap_max = float(capacity_axis.max())
+            if abs(cap_min) <= 1e-6 and abs(cap_max - 1.0) <= 1e-6:
+                normalized_like_two_tuple_cus.append(cu_name)
+
+        if not two_tuple_cus:
+            return
+
+        if len(normalized_like_two_tuple_cus) >= 2 and (
+            len(normalized_like_two_tuple_cus) == len(two_tuple_cus)
+        ):
+            preview = ", ".join(normalized_like_two_tuple_cus[:5])
+            if len(normalized_like_two_tuple_cus) > 5:
+                preview += ", ..."
+            raise ValueError(
+                "Aging-study input appears to use normalized 0..1 capacity axes for "
+                f"multiple 2-tuple CUs ({preview}). This is ambiguous and will make "
+                "LAM incorrect. Pass 3-tuples (capacity, voltage, actual_capacity) "
+                "or pass a path to analyze_aging_study() so PyDMA can load actual "
+                "capacities with config.direction."
+            )
+
+        warnings.warn(
+            "2-tuple aging-study input assumes measured_capacity already uses the "
+            "real Ah axis. Prefer 3-tuples (capacity, voltage, actual_capacity) "
+            "or pass a path to analyze_aging_study() so PyDMA can load actual "
+            "capacities with config.direction.",
+            UserWarning,
+            stacklevel=3,
+        )
 
     def compute_simulated_curves(
         self,
@@ -1328,4 +1405,5 @@ class DMAAnalyzer:
         self._last_result = None
         self._capacity_history = []
         self._normalized_soc_warning_issued = False
+        self._reorientation_warning_issued = False
         return self

@@ -48,7 +48,7 @@ from pydma.electrodes.blend import BlendElectrode
 from pydma.electrodes.inhomogeneity import calculate_inhomogeneity
 
 # Data loading
-from pydma.preprocessing.loader import load_ocp, load_pocv, auto_detect_columns
+from pydma.preprocessing.loader import load_ocp, load_pocv, load_aging_study, auto_detect_columns
 
 # Preprocessing
 from pydma.preprocessing.smoother import (
@@ -99,6 +99,7 @@ __all__ = [
     # Data loading
     "load_ocp",
     "load_pocv",
+    "load_aging_study",
     "auto_detect_columns",
     # Preprocessing
     "smooth_lowess",

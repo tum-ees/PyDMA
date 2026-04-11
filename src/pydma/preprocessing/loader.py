@@ -329,9 +329,11 @@ def _extract_aging_study_from_mat(
             continue
 
         # Direct mapping: {CU1: <data>, CU2: <data>, ...}
-        direct_cu_keys = [
-            key for key in container.keys() if _normalize_name(key).startswith("cu")
-        ]
+        direct_cu_keys = []
+        for key in container.keys():
+            normalized_key = _normalize_name(key)
+            if normalized_key.startswith("cu") and any(ch.isdigit() for ch in normalized_key[2:]):
+                direct_cu_keys.append(key)
         if direct_cu_keys:
             parsed_any = False
             for cu_key in sorted(direct_cu_keys, key=_cu_sort_key):
