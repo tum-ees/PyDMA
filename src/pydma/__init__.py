@@ -26,7 +26,7 @@ Example
 >>> result = analyzer.analyze(measured_capacity, measured_voltage)
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 __author__ = "TUM-EES"
 __email__ = "mathias.rehm@tum.de"
 

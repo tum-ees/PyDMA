@@ -203,6 +203,22 @@ The optimizer uses an 8-element parameter vector internally:
 
 See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed examples.
 
+## 📝 Release Notes
+
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+**1.0.0 highlights:**
+
+- **New:** inhomogeneity offset (`inhom_anode_offset`, `inhom_cathode_offset`) lets
+  a fraction of the maximum inhomogeneity spread be present already at SOC = 0,
+  matching MATLAB's new `inhomOffsetFraction` argument.
+- **Numerical change:** `q0` is now the span of the normalized SOC axis (≈ 1.0),
+  matching MATLAB. Previously, PyDMA multiplied DVA/ICA costs by the raw Ah
+  capacity, so fits with `weight_dva > 0` and/or `weight_ica > 0` may produce
+  **small numerical differences compared with PyDMA ≤ 0.1.0**. Fits are now
+  cell-size independent and consistent with the MATLAB-tuned weight defaults.
+  OCV-only fits are unaffected.
+
 ## 🎖️ Acknowledgments
 
 This is a Python translation of the [TUM-EES DegradationModeAnalysis](https://github.com/tum-ees/degradation-mode-analysis) MATLAB framework.
