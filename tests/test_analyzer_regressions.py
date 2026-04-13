@@ -113,3 +113,14 @@ def test_fitted_params_to_array_converts_optional_none_values_to_zero():
 
     assert arr.dtype.kind == "f"
     np.testing.assert_allclose(arr, np.array([1.0, 0.0, 1.1, -0.1, 0.0, 0.0, 0.0, 0.0]))
+
+
+def test_prepare_measured_data_keeps_matlab_q0_on_normalized_soc_axis():
+    analyzer = DMAAnalyzer()
+    cap = np.array([0.0, 2.1, 4.2])
+    volt = np.array([3.0, 3.5, 4.0])
+
+    _, _, q0, cap_span = analyzer._prepare_measured_data(cap, volt)
+
+    assert np.isclose(q0, 1.0)
+    assert np.isclose(cap_span, 4.2)

@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import itertools
 from unittest.mock import patch
 import warnings
 
@@ -258,6 +259,38 @@ def test_config_algorithm_and_initial_guess_are_active():
     assert config.algorithm == "differential_evolution"
     assert init[4] == 0.22
     assert init[5] == 0.44
+
+
+def test_get_initial_guess_stays_within_bounds_for_all_flag_combos():
+    for use_ab, use_cb, allow_inhom_an, allow_inhom_ca in itertools.product(
+        [False, True],
+        repeat=4,
+    ):
+        cfg = DMAConfig(
+            use_anode_blend=use_ab,
+            use_cathode_blend=use_cb,
+            allow_anode_inhomogeneity=allow_inhom_an,
+            allow_cathode_inhomogeneity=allow_inhom_ca,
+        )
+        init = cfg.get_initial_guess()
+        lb, ub = cfg.get_full_bounds()
+        assert np.all(init >= lb - 1e-12)
+        assert np.all(init <= ub + 1e-12)
+
+
+def test_get_initial_guess_stays_within_bounds_with_previous_inhom_constraints():
+    cfg = DMAConfig(
+        allow_anode_inhomogeneity=True,
+        allow_cathode_inhomogeneity=True,
+        max_inhomogeneity=0.3,
+        max_inhomogeneity_delta=0.05,
+    )
+
+    init = cfg.get_initial_guess(inhom_an_prev=0.12, inhom_ca_prev=0.18)
+    lb, ub = cfg.get_full_bounds(inhom_an_prev=0.12, inhom_ca_prev=0.18)
+
+    assert np.all(init >= lb - 1e-12)
+    assert np.all(init <= ub + 1e-12)
 
 
 def test_analyze_sets_real_fit_metrics_and_result_metadata():

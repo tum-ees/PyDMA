@@ -469,7 +469,7 @@ class DMAAnalyzer:
         MATLAB behavior (calculate_full_cell_data.m):
         - Smooth voltage with LOWESS (smoothingPoints)
         - Resample to uniform SOC grid (dataLength)
-        - Q0 is raw SOC/capacity span (not normalized)
+        - Q0 is the span of the internal normalized SOC axis (typically 1.0)
 
         Also validates that voltage INCREASES with increasing SOC (full-cell convention).
         """
@@ -545,8 +545,10 @@ class DMAAnalyzer:
         else:
             meas_voltage_uniform = self._interp_linear_extrap(q_sorted, v_sorted, q_uniform)
 
-        # MATLAB Q0 is the raw full-cell capacity span before normalization.
-        q0 = cap_span
+        # MATLAB Q0 is derived from the SOC axis used for fitting. At this
+        # point q_raw is already normalized to 0..1, while cap_span keeps the
+        # original Ah span for downstream capacity/LAM calculations.
+        q0 = float(q_raw.max() - q_raw.min())
 
         return q_uniform, meas_voltage_uniform, q0, cap_span
 
@@ -748,7 +750,6 @@ class DMAAnalyzer:
             if actual_capacity <= 0:
                 raise ValueError(f"actual_capacity must be positive, got {actual_capacity}")
         effective_capacity = actual_capacity if actual_capacity is not None else cap_span
-        q0 = effective_capacity
 
         # Prepare electrodes to match MATLAB preprocessing
         anode = self._prepare_electrode(self.anode)
