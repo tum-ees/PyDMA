@@ -143,6 +143,8 @@ config = DMAConfig(
     allow_anode_inhomogeneity=True,
     allow_cathode_inhomogeneity=True,
     max_inhomogeneity=0.3,
+    inhom_anode_offset=0.2,
+    inhom_cathode_offset=0.0,
 )
 ```
 

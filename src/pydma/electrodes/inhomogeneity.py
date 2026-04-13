@@ -58,6 +58,7 @@ def calculate_inhomogeneity(
     soc: np.ndarray,
     voltage: np.ndarray,
     inhom_sigma: float,
+    inhom_offset_fraction: float = 0.0,
 ) -> np.ndarray:
     """
     Apply inhomogeneity model to an electrode potential curve.
@@ -75,6 +76,11 @@ def calculate_inhomogeneity(
     inhom_sigma : float
         Inhomogeneity magnitude (standard deviation).
         0 means no inhomogeneity, higher values mean more spread.
+    inhom_offset_fraction : float, optional
+        Fraction of the maximum spread already present at SOC = 0.
+        ``0.0`` reproduces the original SOC-dependent behavior, while ``1.0``
+        makes the spread SOC-independent. Matches MATLAB's
+        ``inhomOffsetFraction`` argument.
 
     Returns
     -------
@@ -83,8 +89,9 @@ def calculate_inhomogeneity(
 
     Notes
     -----
-    This implements the equation:
-    U_observed(SOC) = sum(weights[i] * U(SOC * x[i]))
+    This implements the MATLAB equation:
+    alpha_eff = inhom_offset_fraction + (1 - inhom_offset_fraction) * SOC
+    U_observed(SOC) = sum(weights[i] * U(SOC + alpha_eff * (x[i] - 1)))
 
     where x is the distribution of local SOC multipliers and weights
     are Gaussian weights centered at x=1.
@@ -92,8 +99,9 @@ def calculate_inhomogeneity(
     DIFFERENCE FROM MATLAB: Same mathematical model. The MATLAB code uses
     griddedInterpolant; we use numpy.interp for simplicity and compatibility.
 
-    The inhomogeneity is zero at 0% full cell SOC and maximum at 100% SOC.
-    This is implicitly handled by the SOC * x multiplication.
+    With ``inhom_offset_fraction = 0`` the inhomogeneity is zero at 0% full
+    cell SOC and maximum at 100% SOC. Positive offsets allow a finite
+    fraction of the maximum spread already at SOC = 0.
 
     Examples
     --------
@@ -116,25 +124,22 @@ def calculate_inhomogeneity(
     # Get weights for this sigma value (cached)
     x, weights = _get_inhomogeneity_weights(float(inhom_sigma))
 
-    # Build query grid: each row is SOC values, each column is a different x multiplier
-    # Xq[i, j] = soc[i] * x[j]
-    Xq = np.outer(soc, x)
+    x_dev = x - 1.0
+    alpha_eff = inhom_offset_fraction + (1.0 - inhom_offset_fraction) * soc
+    x_query = soc[:, None] + alpha_eff[:, None] * x_dev[None, :]
 
     # Interpolate voltage at all query points
-    # Use linear interpolation with edge handling
-    soc_min, soc_max = soc.min(), soc.max()
-
-    # Interpolate each column
-    voltage_at_xq = np.zeros_like(Xq)
+    # MATLAB uses griddedInterpolant(..., 'linear', 'nearest'), so clamp
+    # out-of-range queries to the nearest boundary value.
+    voltage_at_xq = np.zeros_like(x_query)
     for j in range(len(x)):
-        voltage_at_xq[:, j] = np.interp(Xq[:, j], soc, voltage)
-
-    # Handle out-of-bounds: set ALL to U(end) matching MATLAB behavior
-    # MATLAB (calculate_inhomogeneity.m:88-89):
-    #   outMask = (Xq < socMin) | (Xq > socMax);
-    #   E_OC_dist(outMask) = U(end);
-    out_of_bounds = (Xq < soc_min) | (Xq > soc_max)
-    voltage_at_xq[out_of_bounds] = voltage[-1]
+        voltage_at_xq[:, j] = np.interp(
+            x_query[:, j],
+            soc,
+            voltage,
+            left=voltage[0],
+            right=voltage[-1],
+        )
 
     # Weighted average across x dimension
     voltage_mean = voltage_at_xq @ weights
@@ -145,6 +150,7 @@ def calculate_inhomogeneity(
 def calculate_inhomogeneity_for_electrode(
     electrode,
     inhom_sigma: float,
+    inhom_offset_fraction: float = 0.0,
 ):
     """
     Apply inhomogeneity to an ElectrodeOCP object.
@@ -155,6 +161,8 @@ def calculate_inhomogeneity_for_electrode(
         Electrode OCP object.
     inhom_sigma : float
         Inhomogeneity magnitude.
+    inhom_offset_fraction : float, optional
+        Fraction of the maximum spread already present at SOC = 0.
 
     Returns
     -------
@@ -167,7 +175,10 @@ def calculate_inhomogeneity_for_electrode(
         return electrode.copy()
 
     voltage_inhom = calculate_inhomogeneity(
-        electrode.soc, electrode.voltage, inhom_sigma
+        electrode.soc,
+        electrode.voltage,
+        inhom_sigma,
+        inhom_offset_fraction=inhom_offset_fraction,
     )
 
     return ElectrodeOCP(

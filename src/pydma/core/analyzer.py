@@ -633,6 +633,8 @@ class DMAAnalyzer:
                     if cathode_is_blend is not None
                     else self.cathode_is_blend
                 ),
+                inhom_anode_offset=self.config.inhom_anode_offset,
+                inhom_cathode_offset=self.config.inhom_cathode_offset,
                 inhom_points=61,
                 ref_data=ref_data,
                 prev_lam=self._previous_lam,
@@ -664,6 +666,8 @@ class DMAAnalyzer:
                     if cathode_is_blend is not None
                     else self.cathode_is_blend
                 ),
+                inhom_anode_offset=self.config.inhom_anode_offset,
+                inhom_cathode_offset=self.config.inhom_cathode_offset,
                 inhom_points=61,  # Fixed as per MATLAB implementation
             )
 
@@ -802,6 +806,8 @@ class DMAAnalyzer:
             roi_ocv_max=self.config.roi_ocv_max,
             anode_is_blend=anode_is_blend,
             cathode_is_blend=cathode_is_blend,
+            inhom_anode_offset=self.config.inhom_anode_offset,
+            inhom_cathode_offset=self.config.inhom_cathode_offset,
             inhom_points=61,
         )
 
@@ -939,6 +945,8 @@ class DMAAnalyzer:
                 self.config.roi_ocv_max,
                 anode_is_blend,
                 cathode_is_blend,
+                self.config.inhom_anode_offset,
+                self.config.inhom_cathode_offset,
                 61,
             )
             if self.config.weight_ocv > 0
@@ -955,6 +963,8 @@ class DMAAnalyzer:
                 q0,
                 anode_is_blend,
                 cathode_is_blend,
+                self.config.inhom_anode_offset,
+                self.config.inhom_cathode_offset,
                 61,
             )
             if self.config.weight_dva > 0
@@ -971,6 +981,8 @@ class DMAAnalyzer:
                 q0,
                 anode_is_blend,
                 cathode_is_blend,
+                self.config.inhom_anode_offset,
+                self.config.inhom_cathode_offset,
                 61,
             )
             if self.config.weight_ica > 0
@@ -1261,6 +1273,7 @@ class DMAAnalyzer:
             params.beta_an,
             gamma_blend2=params.gamma_blend2_an or 0.0,
             inhom=params.inhom_an or 0.0,
+            inhom_offset=self.config.inhom_anode_offset,
         )
 
         cathode_soc, cathode_v = apply_params_to_electrode(
@@ -1269,6 +1282,7 @@ class DMAAnalyzer:
             params.beta_ca,
             gamma_blend2=params.gamma_blend2_ca or 0.0,
             inhom=params.inhom_ca or 0.0,
+            inhom_offset=self.config.inhom_cathode_offset,
         )
 
         # MATLAB-matching reconstruction: fixed [0,1] grid with 0-fill outside

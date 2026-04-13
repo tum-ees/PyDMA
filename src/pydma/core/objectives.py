@@ -82,6 +82,7 @@ def apply_params_to_electrode(
     beta: float,
     gamma_blend2: float = 0.0,
     inhom: float = 0.0,
+    inhom_offset: float = 0.0,
     inhom_points: int = 61,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Apply transformation parameters to an electrode.
@@ -98,6 +99,8 @@ def apply_params_to_electrode(
         Blend weighting factor (only for BlendElectrode), by default 0.0
     inhom : float, optional
         Inhomogeneity factor (0 = no inhomogeneity), by default 0.0
+    inhom_offset : float, optional
+        Fraction of the maximum inhomogeneity already present at SOC = 0.
     inhom_points : int, optional
         Number of points for inhomogeneity distribution, by default 61
 
@@ -116,7 +119,12 @@ def apply_params_to_electrode(
     # Apply inhomogeneity if enabled (MATLAB: calculate_inhomogeneity is applied BEFORE alpha-beta)
     # Note: calculate_inhomogeneity returns only voltage, not (soc, voltage)
     if abs(inhom) > 1e-10:
-        voltage = calculate_inhomogeneity(soc, voltage, inhom)
+        voltage = calculate_inhomogeneity(
+            soc,
+            voltage,
+            inhom,
+            inhom_offset_fraction=inhom_offset,
+        )
 
     # Apply alpha-beta transformation (matches MATLAB): q = alpha * soc + beta
     soc_transformed = alpha * soc + beta
@@ -158,6 +166,7 @@ def electrode_potential_on_q(
     beta: float,
     gamma_blend2: float,
     inhom: float,
+    inhom_offset: float,
     inhom_points: int,
     is_blend: bool,
 ) -> NDArray[np.floating]:
@@ -170,6 +179,7 @@ def electrode_potential_on_q(
         beta,
         gamma_blend2=gamma_blend2 if is_blend else 0.0,
         inhom=inhom,
+        inhom_offset=inhom_offset,
         inhom_points=inhom_points,
     )
     return _interp1_linear_fill0(soc_src, u_src, q)
@@ -249,6 +259,8 @@ def fit_ocv(
     roi_ocv_max: ROISpec,
     anode_is_blend: bool = False,
     cathode_is_blend: bool = False,
+    inhom_anode_offset: float = 0.0,
+    inhom_cathode_offset: float = 0.0,
     inhom_points: int = 61,
 ) -> float:
     """Calculate OCV fitting error (MSE).
@@ -298,6 +310,7 @@ def fit_ocv(
             beta=beta_an,
             gamma_blend2=gamma_blend2_an,
             inhom=inhom_an,
+            inhom_offset=inhom_anode_offset,
             inhom_points=inhom_points,
             is_blend=anode_is_blend,
         )
@@ -309,6 +322,7 @@ def fit_ocv(
             beta=beta_ca,
             gamma_blend2=gamma_blend2_ca,
             inhom=inhom_ca,
+            inhom_offset=inhom_cathode_offset,
             inhom_points=inhom_points,
             is_blend=cathode_is_blend,
         )
@@ -368,6 +382,8 @@ def fit_dva(
     q0: float,
     anode_is_blend: bool = False,
     cathode_is_blend: bool = False,
+    inhom_anode_offset: float = 0.0,
+    inhom_cathode_offset: float = 0.0,
     inhom_points: int = 61,
 ) -> float:
     """Calculate DVA fitting error (MSE) - MATLAB compatible.
@@ -426,6 +442,7 @@ def fit_dva(
             beta=beta_an,
             gamma_blend2=gamma_blend2_an,
             inhom=inhom_an,
+            inhom_offset=inhom_anode_offset,
             inhom_points=inhom_points,
             is_blend=anode_is_blend,
         )
@@ -437,6 +454,7 @@ def fit_dva(
             beta=beta_ca,
             gamma_blend2=gamma_blend2_ca,
             inhom=inhom_ca,
+            inhom_offset=inhom_cathode_offset,
             inhom_points=inhom_points,
             is_blend=cathode_is_blend,
         )
@@ -507,6 +525,8 @@ def fit_ica(
     q0: float,
     anode_is_blend: bool = False,
     cathode_is_blend: bool = False,
+    inhom_anode_offset: float = 0.0,
+    inhom_cathode_offset: float = 0.0,
     inhom_points: int = 61,
 ) -> float:
     """Calculate ICA fitting error (MSE) - MATLAB compatible.
@@ -558,6 +578,7 @@ def fit_ica(
             beta=beta_an,
             gamma_blend2=gamma_blend2_an,
             inhom=inhom_an,
+            inhom_offset=inhom_anode_offset,
             inhom_points=inhom_points,
             is_blend=anode_is_blend,
         )
@@ -569,6 +590,7 @@ def fit_ica(
             beta=beta_ca,
             gamma_blend2=gamma_blend2_ca,
             inhom=inhom_ca,
+            inhom_offset=inhom_cathode_offset,
             inhom_points=inhom_points,
             is_blend=cathode_is_blend,
         )
@@ -612,6 +634,8 @@ def combined_objective(
     w_ica: float = 1.0,
     anode_is_blend: bool = False,
     cathode_is_blend: bool = False,
+    inhom_anode_offset: float = 0.0,
+    inhom_cathode_offset: float = 0.0,
     inhom_points: int = 61,
 ) -> float:
     """Combined objective function for DMA optimization.
@@ -675,6 +699,8 @@ def combined_objective(
             roi_ocv_min,
             roi_ocv_max,
             anode_is_blend, cathode_is_blend,
+            inhom_anode_offset,
+            inhom_cathode_offset,
             inhom_points,
         )
         cost += w_ocv * ocv_error
@@ -688,6 +714,8 @@ def combined_objective(
             dva_roi_mask,
             q0,
             anode_is_blend, cathode_is_blend,
+            inhom_anode_offset,
+            inhom_cathode_offset,
             inhom_points,
         )
         cost += w_dva * dva_error
@@ -701,6 +729,8 @@ def combined_objective(
             ica_roi_mask,
             q0,
             anode_is_blend, cathode_is_blend,
+            inhom_anode_offset,
+            inhom_cathode_offset,
             inhom_points,
         )
         cost += w_ica * ica_error
@@ -844,6 +874,8 @@ def objective_with_penalty(
     w_ica: float = 1.0,
     anode_is_blend: bool = False,
     cathode_is_blend: bool = False,
+    inhom_anode_offset: float = 0.0,
+    inhom_cathode_offset: float = 0.0,
     inhom_points: int = 61,
     ref_data: Optional[ReferenceData] = None,
     prev_lam: Optional[PreviousLAM] = None,
@@ -927,6 +959,7 @@ def objective_with_penalty(
         roi_ocv_min, roi_ocv_max, q0,
         w_ocv, w_dva, w_ica,
         anode_is_blend, cathode_is_blend,
+        inhom_anode_offset, inhom_cathode_offset,
         inhom_points,
     )
 

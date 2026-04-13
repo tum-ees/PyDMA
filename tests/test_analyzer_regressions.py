@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pydma.analysis.degradation import calculate_degradation_modes
 from pydma.core.analyzer import DMAAnalyzer
+from pydma.core.objectives import apply_params_to_electrode
+from pydma.electrodes.electrode import ElectrodeOCP
+from pydma.electrodes.inhomogeneity import calculate_inhomogeneity, get_inhomogeneity_distribution
 from pydma.utils.results import FittedParams, ReferenceData
 
 
@@ -124,3 +127,55 @@ def test_prepare_measured_data_keeps_matlab_q0_on_normalized_soc_axis():
 
     assert np.isclose(q0, 1.0)
     assert np.isclose(cap_span, 4.2)
+
+
+def test_calculate_inhomogeneity_matches_matlab_offset_formula():
+    soc = np.linspace(0.0, 1.0, 11)
+    voltage = soc**2
+    sigma = 0.12
+    offset = 0.35
+
+    x, weights = get_inhomogeneity_distribution(sigma)
+    x_dev = x - 1.0
+    alpha_eff = offset + (1.0 - offset) * soc
+    x_query = soc[:, None] + alpha_eff[:, None] * x_dev[None, :]
+    expected = np.column_stack(
+        [
+            np.interp(x_query[:, j], soc, voltage, left=voltage[0], right=voltage[-1])
+            for j in range(len(x))
+        ]
+    ) @ weights
+
+    actual = calculate_inhomogeneity(
+        soc,
+        voltage,
+        sigma,
+        inhom_offset_fraction=offset,
+    )
+
+    np.testing.assert_allclose(actual, expected)
+
+
+def test_apply_params_to_electrode_passes_inhomogeneity_offset():
+    electrode = ElectrodeOCP(
+        soc=np.linspace(0.0, 1.0, 21),
+        voltage=np.linspace(0.1, 0.2, 21) ** 2,
+        electrode_type="anode",
+    )
+
+    soc_out, voltage_out = apply_params_to_electrode(
+        electrode,
+        alpha=1.0,
+        beta=0.0,
+        inhom=0.1,
+        inhom_offset=0.4,
+    )
+    expected_voltage = calculate_inhomogeneity(
+        electrode.soc,
+        electrode.voltage,
+        0.1,
+        inhom_offset_fraction=0.4,
+    )
+
+    np.testing.assert_allclose(soc_out, electrode.soc)
+    np.testing.assert_allclose(voltage_out, expected_voltage)

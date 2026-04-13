@@ -81,6 +81,12 @@ class DMAConfig:
         Maximum allowed inhomogeneity for (anode, cathode). Default: 0.3.
     max_inhomogeneity_delta : float or tuple
         Maximum inhomogeneity increase per CU. Default: 0.1.
+    inhom_anode_offset : float
+        Fraction of maximum anode inhomogeneity already present at SOC = 0.
+        Default: 0.0.
+    inhom_cathode_offset : float
+        Fraction of maximum cathode inhomogeneity already present at SOC = 0.
+        Default: 0.0.
 
     max_anode_gain : float
         Maximum allowed anode capacity gain per CU. Default: 0.01.
@@ -197,6 +203,8 @@ class DMAConfig:
     allow_first_cycle_inhomogeneity: bool = True
     max_inhomogeneity: Union[float, Tuple[float, float]] = 0.3
     max_inhomogeneity_delta: Union[float, Tuple[float, float]] = 0.1
+    inhom_anode_offset: float = 0.0
+    inhom_cathode_offset: float = 0.0
 
     # Constraint settings (max gain/loss per CU)
     max_anode_gain: float = 0.01
@@ -282,6 +290,12 @@ class DMAConfig:
             raise ValueError(
                 "gamma_cathode_blend2_init must be within [0, gamma_cathode_blend2_upper]"
             )
+
+        if not 0.0 <= self.inhom_anode_offset <= 1.0:
+            raise ValueError("inhom_anode_offset must be within [0, 1]")
+
+        if not 0.0 <= self.inhom_cathode_offset <= 1.0:
+            raise ValueError("inhom_cathode_offset must be within [0, 1]")
 
     def get_solver_options(self) -> dict:
         """
