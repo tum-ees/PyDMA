@@ -5,6 +5,31 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.0.1] - 2026-04-28
+
+### Fixed
+
+* Stoichiometry export can now be anchored to the fitted reconstructed cell
+  voltage at the requested voltage limits via
+  `DMAResult.voltage_anchored_windows(...)`. This avoids exporting raw
+  internal fit-window endpoints that do not necessarily correspond to the
+  measured pseudo-OCV cutoffs. For inhomogeneous fits, the anchored values are
+  the central/nominal stoichiometries of the fitted trajectory.
+* Silicon OCP plateau collapse now returns strictly monotone output for
+  `generate_si_curve(monotone_filter=True)`, making the filtered curve safe for
+  downstream spline interpolation without changing fitting results.
+
+### Added
+
+* `BlendElectrode.get_component_stoichiometries(...)` and
+  `BlendElectrode.get_component_stoichiometry_window(...)` for mapping a blend
+  coordinate to per-phase graphite/silicon stoichiometries.
+* `FittedParams.sto_window_an_per_phase(...)` for raw per-phase inspection when
+  needed.
+* Voltage-anchored composite export helpers for downstream workflows and an
+  updated `getting_started.ipynb` demonstration of fitted-reconstruction
+  voltage anchoring plus anchored Gr/Si phase windows.
+
 ## [1.0.0] - 2026-04-13
 
 ### Added

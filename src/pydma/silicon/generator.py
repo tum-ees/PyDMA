@@ -315,14 +315,121 @@ def _pav_isotonic(
     return result
 
 
+def _collapse_plateaus(
+    voltage: NDArray[np.floating],
+    capacity: NDArray[np.floating],
+    eps: float | None = None,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Replace plateaus in ``capacity`` (runs of equal values) with their two
+    voltage endpoints, shifted by ±eps so the result is strictly monotonic.
+
+    PAV (isotonic regression) pools violating points to a common mean, which
+    yields runs of identical capacity. The resulting (capacity, voltage)
+    relation is a function of voltage but not of capacity — multiple voltages
+    map to the same SOC. Downstream code that interpolates SOC -> voltage
+    needs a strictly monotone capacity axis.
+
+    For each run of length L >= 2 at value q:
+      - keep only the first and last index of the run (drop interior),
+      - set their capacity values to ``q - eps`` and ``q + eps`` (or reversed
+        for a non-increasing curve), clamped to the original [min, max] so
+        the output never extends past the input range.
+
+    Linear interpolation across the original plateau range is preserved within
+    eps, so voltage -> capacity consumers see essentially the same curve.
+
+    Parameters
+    ----------
+    voltage : NDArray
+        Voltage values, sorted with ``capacity``.
+    capacity : NDArray
+        Monotone (post-PAV) capacity values, possibly with plateaus.
+    eps : float, optional
+        Tie-breaking shift. If ``None``, chosen automatically as 1e-5 of the
+        capacity range. Robust under cubic-spline interpolation downstream
+        while still being numerically tiny.
+
+    Returns
+    -------
+    tuple[NDArray, NDArray]
+        Strictly monotone (voltage, capacity) with plateaus collapsed.
+    """
+    n = len(capacity)
+    if n < 2:
+        return voltage, capacity
+
+    direction = 1 if capacity[-1] >= capacity[0] else -1
+
+    q_min = float(capacity.min())
+    q_max = float(capacity.max())
+    q_range = q_max - q_min
+
+    if eps is None:
+        eps = q_range * 1e-5 if q_range > 0 else 1e-9
+    eps = max(float(eps), np.finfo(np.float64).eps)
+
+    # PAV-pooled means can drift in floating point so adjacent buckets that
+    # should have merged end up slightly violating monotonicity. Cumulative
+    # min/max snap forces (non-)monotonicity exactly so plateau detection
+    # below works on a clean signal.
+    q_arr = capacity.astype(np.float64)
+    q_clean = np.maximum.accumulate(q_arr) if direction > 0 else np.minimum.accumulate(q_arr)
+
+    # Mark interior of plateaus for removal
+    keep = np.ones(n, dtype=bool)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and q_clean[j + 1] == q_clean[i]:
+            j += 1
+        if j > i + 1:
+            keep[i + 1:j] = False
+        i = j + 1
+
+    v_out = voltage[keep].copy()
+    q_out = q_clean[keep].astype(np.float64, copy=True)
+
+    # Break remaining adjacent ties by shifting endpoints in the monotone
+    # direction; clamp to the original range so the output never extends
+    # past [q_min, q_max].
+    m = len(q_out)
+    k = 0
+    while k < m - 1:
+        if q_out[k] == q_out[k + 1]:
+            q_out[k] = max(q_min, min(q_max, q_out[k] - direction * eps))
+            q_out[k + 1] = max(q_min, min(q_max, q_out[k + 1] + direction * eps))
+            k += 2
+        else:
+            k += 1
+
+    # Final enforcement: forward sweep adds a tiny correction wherever the
+    # shift step (combined with clamping at the boundary) left adjacent
+    # values weakly ordered. Guarantees strict monotonicity for downstream
+    # cubic-spline interpolators without re-arranging the curve shape.
+    min_step = max(eps * 0.1, np.finfo(np.float64).eps)
+    if direction > 0:
+        for k in range(1, m):
+            if q_out[k] <= q_out[k - 1]:
+                q_out[k] = q_out[k - 1] + min_step
+    else:
+        for k in range(1, m):
+            if q_out[k] >= q_out[k - 1]:
+                q_out[k] = q_out[k - 1] - min_step
+    q_out = np.clip(q_out, q_min, q_max)
+
+    return v_out, q_out
+
+
 def generate_si_curve(
     blend_path: str | Path | None = None,
     graphite_path: str | Path | None = None,
     blend_data: tuple[NDArray[np.floating], NDArray[np.floating]] | None = None,
     graphite_data: tuple[NDArray[np.floating], NDArray[np.floating]] | None = None,
     gamma_si: float = 0.245,
-    filter_input: bool = True,
+    filter_blend: bool = True,
+    filter_graphite: bool = False,
     monotone_filter: bool = True,
+    filter_input: bool | None = None,
 ) -> SiliconCurveResult:
     """Generate artificial silicon OCV curve from blend and graphite data.
 
@@ -343,11 +450,21 @@ def generate_si_curve(
         Graphite (voltage, capacity) data directly
     gamma_si : float, optional
         Silicon fraction in blend (0 < γ < 1), by default 0.245
-    filter_input : bool, optional
-        Whether to apply LOWESS smoothing, by default True
+    filter_blend : bool, optional
+        Whether to apply LOWESS smoothing to the measured blend curve,
+        by default True. The blend is typically a noisy C/30 half-cell
+        measurement that benefits from smoothing.
+    filter_graphite : bool, optional
+        Whether to apply LOWESS smoothing to the graphite reference,
+        by default False. Graphite references are usually clean lookup
+        tables; smoothing a uniformly-resampled table can distort the
+        steep high-voltage tail and truncate the common voltage window.
     monotone_filter : bool, optional
         Whether to enforce monotonicity via isotonic regression (PAV),
         by default True
+    filter_input : bool, optional
+        Deprecated. If set, applies LOWESS to both curves (overrides
+        ``filter_blend`` and ``filter_graphite``).
 
     Returns
     -------
@@ -382,6 +499,16 @@ def generate_si_curve(
     if not 0 < gamma_si < 1:
         raise ValueError(f"gamma_si must be between 0 and 1, got {gamma_si}")
 
+    if filter_input is not None:
+        import warnings
+        warnings.warn(
+            "filter_input is deprecated; use filter_blend and filter_graphite instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        filter_blend = filter_input
+        filter_graphite = filter_input
+
     # Load data
     if blend_data is not None:
         blend_v, blend_q = blend_data
@@ -404,8 +531,8 @@ def generate_si_curve(
     gr_q = np.asarray(gr_q, dtype=np.float64).flatten()
 
     # Smooth and remove duplicates
-    gr_v, gr_q = _smooth_unique(gr_v, gr_q, filter_input)
-    blend_v, blend_q = _smooth_unique(blend_v, blend_q, filter_input)
+    gr_v, gr_q = _smooth_unique(gr_v, gr_q, filter_graphite)
+    blend_v, blend_q = _smooth_unique(blend_v, blend_q, filter_blend)
 
     # Find common voltage window
     v_min = max(gr_v.min(), blend_v.min())
@@ -454,14 +581,20 @@ def generate_si_curve(
             q_si = _pav_isotonic(q_si, 'nonincreasing')
         else:
             q_si = _pav_isotonic(q_si, 'nondecreasing')
+        # Collapse PAV plateaus so the curve becomes a strict function of SOC,
+        # too (not just of voltage). Endpoints get shifted by ±eps to keep
+        # interpolation behaviour effectively unchanged.
+        v_common, q_si = _collapse_plateaus(v_common, q_si)
+        q_gr = np.interp(v_common, gr_v, gr_q)
+        q_blend = np.interp(v_common, blend_v, blend_q)
 
     return SiliconCurveResult(
         voltage=v_common,
         normalized_capacity=q_si,
-        graphite_voltage=gr_v,
-        graphite_capacity=gr_q,
-        blend_voltage=blend_v,
-        blend_capacity=blend_q,
+        graphite_voltage=v_common,
+        graphite_capacity=q_gr,
+        blend_voltage=v_common,
+        blend_capacity=q_blend,
         gamma_si=gamma_si,
     )
 

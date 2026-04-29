@@ -45,6 +45,11 @@ Hossain               A.H. Al-Mustasin,
                       J. Mech. Eng. Res., vol. 12, no. 1, pp. 37-48, 2021.
                       DOI: 10.5897/JMER2021.0543
 
+Please note that the OCPs of Rehm2025 and Rehm2026 have been resampled
+to 1001 data points on a uniform normalized-capacity (SOC) grid.
+Additionally, a Pool Adjacent Violators (PAV) monotonicity correction
+from the DMA framework's silicon-curve generation workflow was applied,
+to assure strict monotonic voltage changes.
 
 Best regards,
 Mathias Rehm and co-authors
