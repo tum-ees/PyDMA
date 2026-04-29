@@ -994,6 +994,14 @@ class DMAAnalyzer:
         sim_curves = self.compute_simulated_curves(fitted_params, n_points=len(q))
         reconstructed_voltage = np.interp(q, sim_curves['capacity'], sim_curves['voltage'])
 
+        # Note: voltage anchoring (mapping the fitted SOC = [0, 1] window to
+        # the input pOCV's V_min / V_max) is not done here in the analyzer.
+        # Consumers that want voltage-anchored sto endpoints / c_max should
+        # call ``DMAResult.voltage_anchored_windows(on_out_of_range="clip")``
+        # explicitly — this keeps the analyzer's RMSE / degradation
+        # computations on the raw optimiser output and lets the consumer
+        # control how out-of-range cutoffs are handled (clip vs raise).
+
         # RMSE in fit region (ROI mask from shared ROI utilities)
         ocv_roi_mask = build_roi_mask(q, self.config.roi_ocv_min, self.config.roi_ocv_max)
         if not np.any(ocv_roi_mask):

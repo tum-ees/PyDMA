@@ -192,6 +192,96 @@ class BlendElectrode:
 
         return blend_soc, blend_voltage
 
+    def get_component_stoichiometries(
+        self, gamma: float, blend_soc: np.ndarray | float
+    ) -> dict[str, np.ndarray]:
+        """
+        Evaluate component stoichiometries at fitted blend SOC positions.
+
+        The fitted alpha/beta parameters operate on the normalized blend
+        coordinate returned by :meth:`get_blend_curve`. This helper maps that
+        coordinate back through the blended voltage curve and then reads the
+        corresponding component SOC values on the same voltage grid.
+        """
+        if gamma < 0 or gamma > 1:
+            raise ValueError(f"gamma must be in [0, 1], got {gamma}")
+
+        if self._common_voltage is None:
+            self._prepare_blend_data()
+
+        blend_soc_arr = np.asarray(blend_soc, dtype=float)
+
+        q_blend = gamma * self._q_blend2_interp + (1 - gamma) * self._q_blend1_interp
+        q_min = q_blend.min()
+        q_max = q_blend.max()
+        if abs(q_max - q_min) < 1e-10:
+            raise ValueError("Blend curve has no capacity range")
+
+        # PyDMA fits this normalized blend coordinate, not either component directly.
+        q_norm = (q_blend - q_min) / (q_max - q_min)
+        sort_idx = np.argsort(q_norm)
+        q_sorted = q_norm[sort_idx]
+        v_sorted = self._common_voltage[sort_idx]
+
+        v_of_blend_soc = interp1d(
+            q_sorted,
+            v_sorted,
+            kind="linear",
+            fill_value="extrapolate",
+        )
+        # Component stoichiometries are recovered at the same physical voltage.
+        voltage = v_of_blend_soc(blend_soc_arr)
+
+        q1_of_v = interp1d(
+            self._common_voltage,
+            self._q_blend1_interp,
+            kind="linear",
+            bounds_error=False,
+            fill_value=0.0,
+        )
+        q2_of_v = interp1d(
+            self._common_voltage,
+            self._q_blend2_interp,
+            kind="linear",
+            bounds_error=False,
+            fill_value=0.0,
+        )
+
+        return {
+            "blend_soc": blend_soc_arr,
+            "voltage": voltage,
+            "blend1_stoichiometry": q1_of_v(voltage),
+            "blend2_stoichiometry": q2_of_v(voltage),
+            "raw_blend_capacity": gamma * q2_of_v(voltage)
+            + (1 - gamma) * q1_of_v(voltage),
+            "raw_blend_min": np.asarray(q_min),
+            "raw_blend_max": np.asarray(q_max),
+        }
+
+    def get_component_stoichiometry_window(
+        self, gamma: float, blend_soc_window: Tuple[float, float]
+    ) -> dict[str, float]:
+        """
+        Return component stoichiometries at the two fitted blend endpoints.
+        """
+        values = self.get_component_stoichiometries(
+            gamma, np.asarray(blend_soc_window, dtype=float)
+        )
+        return {
+            "blend_sto_0soc": float(values["blend_soc"][0]),
+            "blend_sto_100soc": float(values["blend_soc"][1]),
+            "voltage_0soc": float(values["voltage"][0]),
+            "voltage_100soc": float(values["voltage"][1]),
+            "blend1_sto_0soc": float(values["blend1_stoichiometry"][0]),
+            "blend1_sto_100soc": float(values["blend1_stoichiometry"][1]),
+            "blend2_sto_0soc": float(values["blend2_stoichiometry"][0]),
+            "blend2_sto_100soc": float(values["blend2_stoichiometry"][1]),
+            "raw_blend_capacity_0soc": float(values["raw_blend_capacity"][0]),
+            "raw_blend_capacity_100soc": float(values["raw_blend_capacity"][1]),
+            "raw_blend_min": float(values["raw_blend_min"]),
+            "raw_blend_max": float(values["raw_blend_max"]),
+        }
+
     def get_blend_electrode(
         self, gamma: float, smooth: bool = False, window: int = 30
     ) -> ElectrodeOCP:
