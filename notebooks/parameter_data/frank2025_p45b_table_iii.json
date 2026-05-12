@@ -1,0 +1,140 @@
+{
+  "_metadata": {
+    "source": "Frank et al. (2025), Table III",
+    "doi": "10.1149/1945-7111/adc03c",
+    "title": "Modeling Inhomogeneities during Parallel-Connected Fast Charging of Lithium-Ion Battery Systems",
+    "cell": "Molicel INR21700-P45B",
+    "scope": "Fixed material and geometry constants only. No fitted, derived, or measurement-dependent values. No PyBaMM-base-set fallback values.",
+    "consumed_by": "pydma/notebooks/pybamm_integration.ipynb",
+    "audit_check": "F * eps_s_neg * L_neg * A_act * c_s_max_neg / 3600 = 96485 * 0.754 * 50e-6 * 0.163 * 26911 / 3600 ~= 4.43 A.h (matches the P45B 4.5 A.h nominal capacity ballpark, confirming A_act = 0.163 m^2 both-sides convention)."
+  },
+  "parameters": {
+    "Negative electrode active material volume fraction": {
+      "value": 0.754,
+      "unit": "vol fraction",
+      "source": "Frank 2025 Table III, anode active material fraction = 75.4 vol%"
+    },
+    "Positive electrode active material volume fraction": {
+      "value": 0.723,
+      "unit": "vol fraction",
+      "source": "Frank 2025 Table III, cathode active material fraction = 72.3 vol%"
+    },
+
+    "Negative electrode porosity": {
+      "value": 0.196,
+      "unit": "vol fraction",
+      "source": "Frank 2025 Table III, anode porosity = 19.6 vol%"
+    },
+    "Positive electrode porosity": {
+      "value": 0.227,
+      "unit": "vol fraction",
+      "source": "Frank 2025 Table III, cathode porosity = 22.7 vol%"
+    },
+    "Separator porosity": {
+      "value": 0.40,
+      "unit": "vol fraction",
+      "source": "Frank 2025 Table III, separator porosity = 40 vol%"
+    },
+
+    "Negative electrode thickness [m]": {
+      "value": 5.0e-5,
+      "unit": "m",
+      "source": "Frank 2025 Table III, anode coating thickness 50 um"
+    },
+    "Positive electrode thickness [m]": {
+      "value": 4.2e-5,
+      "unit": "m",
+      "source": "Frank 2025 Table III, cathode coating thickness 42 um"
+    },
+    "Separator thickness [m]": {
+      "value": 1.4e-5,
+      "unit": "m",
+      "source": "Frank 2025 Table III, separator thickness 14 um"
+    },
+
+    "Electrode width [m]": {
+      "value": 1.294,
+      "unit": "m",
+      "source": "Frank 2025 Table III, cathode length 129.4 cm"
+    },
+    "Electrode height [m]": {
+      "value": 0.063,
+      "unit": "m",
+      "source": "Frank 2025 Table III, cathode height 6.3 cm"
+    },
+    "Number of electrodes connected in parallel to make a cell": {
+      "value": 2,
+      "unit": "-",
+      "source": "Frank 2025 Table III, A_act = 0.163 m^2 = 2 x (1.294 x 0.063) m^2 (both coated sides of the jelly-roll)"
+    },
+
+    "Negative particle radius [m]": {
+      "value": 5.11e-6,
+      "unit": "m",
+      "source": "Frank 2025 Table III, anode particle radius D50 = 5.11 um"
+    },
+    "Positive particle radius [m]": {
+      "value": 7.54e-6,
+      "unit": "m",
+      "source": "Frank 2025 Table III, cathode particle radius D50 = 7.54 um"
+    },
+
+    "Negative particle diffusivity [m2.s-1]": {
+      "value": 1.5e-13,
+      "unit": "m^2.s^-1",
+      "source": "Frank 2025 Table III, fitted D_s anode"
+    },
+    "Positive particle diffusivity [m2.s-1]": {
+      "value": 1.6e-13,
+      "unit": "m^2.s^-1",
+      "source": "Frank 2025 Table III, fitted D_s cathode"
+    },
+    "Negative electrode conductivity [S.m-1]": {
+      "value": 38.7,
+      "unit": "S.m^-1",
+      "source": "Frank 2025 Table III, sigma_s anode"
+    },
+    "Positive electrode conductivity [S.m-1]": {
+      "value": 17.3,
+      "unit": "S.m^-1",
+      "source": "Frank 2025 Table III, sigma_s cathode"
+    },
+
+    "Negative electrode Bruggeman coefficient (electrolyte)": {
+      "value": 1.7,
+      "unit": "-",
+      "source": "Frank 2025 Table III, anode tortuosity tau = eps_l^-0.7 -> PyBaMM b = 1 + 0.7 = 1.7"
+    },
+    "Positive electrode Bruggeman coefficient (electrolyte)": {
+      "value": 1.5,
+      "unit": "-",
+      "source": "Frank 2025 Table III, cathode tortuosity tau = eps_l^-0.5 -> PyBaMM b = 1.5"
+    },
+    "Separator Bruggeman coefficient (electrolyte)": {
+      "value": 1.5,
+      "unit": "-",
+      "source": "Frank 2025 Table III, separator tortuosity tau = eps_l^-0.5 -> PyBaMM b = 1.5"
+    },
+
+    "Negative current collector thickness [m]": {
+      "value": 1.0e-5,
+      "unit": "m",
+      "source": "Frank 2025 Table III, Cu current collector thickness 10 um"
+    },
+    "Positive current collector thickness [m]": {
+      "value": 1.4e-5,
+      "unit": "m",
+      "source": "Frank 2025 Table III, Al current collector thickness 14 um"
+    },
+    "Negative current collector conductivity [S.m-1]": {
+      "value": 5.95e7,
+      "unit": "S.m^-1",
+      "source": "Frank 2025 Table III, Cu solid conductivity"
+    },
+    "Positive current collector conductivity [S.m-1]": {
+      "value": 3.77e7,
+      "unit": "S.m^-1",
+      "source": "Frank 2025 Table III, Al solid conductivity"
+    }
+  }
+}
