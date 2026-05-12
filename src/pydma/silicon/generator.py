@@ -429,6 +429,7 @@ def generate_si_curve(
     filter_blend: bool = True,
     filter_graphite: bool = False,
     monotone_filter: bool = True,
+    collapse_plateaus: bool = False,
     filter_input: bool | None = None,
 ) -> SiliconCurveResult:
     """Generate artificial silicon OCV curve from blend and graphite data.
@@ -581,12 +582,16 @@ def generate_si_curve(
             q_si = _pav_isotonic(q_si, 'nonincreasing')
         else:
             q_si = _pav_isotonic(q_si, 'nondecreasing')
-        # Collapse PAV plateaus so the curve becomes a strict function of SOC,
-        # too (not just of voltage). Endpoints get shifted by ±eps to keep
-        # interpolation behaviour effectively unchanged.
-        v_common, q_si = _collapse_plateaus(v_common, q_si)
-        q_gr = np.interp(v_common, gr_v, gr_q)
-        q_blend = np.interp(v_common, blend_v, blend_q)
+        # Plateau-collapse is opt-in. Removing PAV plateau interiors makes the
+        # curve a strict function of SOC (needed for downstream SOC->V
+        # consumers) but under-resolves the low-V silicon plateau and breaks
+        # the PyDMA discharge balancing fit (~21 mV vs ~3.34 mV native). Keep
+        # this disabled for fitting; enable only for export paths that need
+        # strict monotonicity in SOC.
+        if collapse_plateaus:
+            v_common, q_si = _collapse_plateaus(v_common, q_si)
+            q_gr = np.interp(v_common, gr_v, gr_q)
+            q_blend = np.interp(v_common, blend_v, blend_q)
 
     return SiliconCurveResult(
         voltage=v_common,

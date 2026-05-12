@@ -6,3 +6,6 @@ dist/
 build/
 .claude/
 .coverage
+
+# Runtime artifacts written by pybamm_integration.ipynb (regenerated on every run)
+notebooks/_pybamm_ocp_csvs/

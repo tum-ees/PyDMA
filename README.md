@@ -207,6 +207,55 @@ See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
+**1.0.2 highlights:**
+
+- **New: PyDMA → PyBaMM bridge.** A PyDMA fit now plugs directly into a
+  PyBaMM `ParameterValues` via the new `pydma.utils.balancing` module.
+  `derive_balancing_from_result(result, geometry, v_min, v_max)` takes a
+  voltage-anchored PyDMA fit together with your cell's geometry and
+  returns simulator-agnostic `c_max` and `c_init(SoC)` values for both
+  electrodes; `ElectrodeBalancing.pybamm_overrides(soc)` wraps those
+  four scalars in a dict keyed by PyBaMM's exact parameter names, ready
+  for `pybamm.ParameterValues.update(...)`. The math is universal
+  full-cell electrochemistry, and only that one method is PyBaMM-flavoured.
+- **New notebook:** `notebooks/pybamm_integration.ipynb` walks the full
+  bridge end-to-end for the Molicel INR21700-P45B, verified by a C/500
+  DFN charge round-trip in PyBaMM. Material/geometry values come
+  exclusively from Frank et al. (2025), Table III
+  (DOI 10.1149/1945-7111/adc03c); `Chen2020` is used only as a public
+  Li-ion fallback base for slots Frank does not document.
+- **New data file:** `notebooks/parameter_data/frank2025_p45b_table_iii.json`
+  centralises the 24 Frank et al. Table III constants.
+- **Tutorial cleanup:** `notebooks/getting_started.ipynb` is now purely
+  a DMA-analysis tutorial; the PyBaMM bridge moved to the dedicated
+  notebook.
+- **API surface for the bridge:** `derive_balancing`,
+  `derive_balancing_from_result`, `ElectrodeBalancing`, and the typed
+  user-input dataclass `CellGeometry` are re-exported at the package
+  top level (`from pydma import derive_balancing_from_result`, etc.).
+  PyDMA does **not** estimate cell geometry. The user supplies the
+  electrode thicknesses, active-material volume fractions, electrode
+  area, and BoL capacity that the bridge consumes.
+
+**1.0.1 highlights:**
+
+- **New: voltage-anchored stoichiometry export.**
+  `DMAResult.voltage_anchored_windows(...)` anchors the exported
+  stoichiometry windows to the fitted reconstructed cell voltage at
+  the requested voltage limits, rather than to raw internal fit-window
+  endpoints that may not match the measured pseudo-OCV cutoffs. For
+  inhomogeneous fits, the anchored values are the central/nominal
+  stoichiometries of the fitted trajectory.
+- **New:** per-phase Gr / Si stoichiometry windows for blend
+  electrodes via `BlendElectrode.get_component_stoichiometries(...)`
+  and `BlendElectrode.get_component_stoichiometry_window(...)`, plus
+  raw `FittedParams.sto_window_an_per_phase(...)` for direct
+  inspection.
+- **Fixed:** Silicon OCP plateau collapse in
+  `generate_si_curve(monotone_filter=True)` now returns strictly
+  monotone output, making the filtered curve safe for downstream
+  spline interpolation without changing fitting results.
+
 **1.0.0 highlights:**
 
 - **New:** inhomogeneity offset (`inhom_anode_offset`, `inhom_cathode_offset`) lets
@@ -221,7 +270,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## 🎖️ Acknowledgments
 
-This is a Python translation of the [TUM-EES DegradationModeAnalysis](https://github.com/tum-ees/degradation-mode-analysis) MATLAB framework.
+This is a Python translation of the [TUM-EES DegradationModeAnalysis](https://github.com/tum-ees/DegradationModeAnalysis) MATLAB framework.
 We would like to thank Johannes Natterer for providing the aging data set of a cyclic aged P45B cell and for help in translating into Python.
 
 ## 📯 Developers

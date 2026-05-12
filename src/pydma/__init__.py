@@ -26,7 +26,8 @@ Example
 >>> result = analyzer.analyze(measured_capacity, measured_voltage)
 """
 
-__version__ = "1.0.0"
+from pydma._version import __version__
+
 __author__ = "TUM-EES"
 __email__ = "mathias.rehm@tum.de"
 
@@ -78,6 +79,16 @@ from pydma.visualization.plots import (
 # Silicon curve generation
 from pydma.silicon.generator import generate_si_curve, SiliconCurveParams
 
+# Electrode balancing export (PyDMA fit + cell geometry -> c_max / c_init).
+# Simulator-agnostic; ElectrodeBalancing.pybamm_overrides() is the only
+# PyBaMM-flavoured convenience.
+from pydma.utils.balancing import (
+    CellGeometry,
+    ElectrodeBalancing,
+    derive_balancing,
+    derive_balancing_from_result,
+)
+
 __all__ = [
     # Version info
     "__version__",
@@ -122,4 +133,9 @@ __all__ = [
     # Silicon
     "generate_si_curve",
     "SiliconCurveParams",
+    # Electrode balancing export
+    "CellGeometry",
+    "ElectrodeBalancing",
+    "derive_balancing",
+    "derive_balancing_from_result",
 ]

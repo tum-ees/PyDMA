@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pydma"
-version = "1.0.1"
+dynamic = ["version"]
 description = "Battery Degradation Mode Analysis - Python implementation of TUM-EES DegradationModeAnalysis"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -75,6 +75,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "pydma.data.ocps" = ["*.csv"]
+
+[tool.setuptools.dynamic]
+version = {attr = "pydma._version.__version__"}
 
 [tool.black]
 line-length = 100

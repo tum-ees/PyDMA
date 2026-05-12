@@ -5,6 +5,48 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.0.2] - 2026-05-12
+
+### Added
+
+* New `pydma.utils.balancing` module that maps a PyDMA voltage-anchored
+  fit and the cell geometry onto simulator-agnostic
+  `c_max` / `c_init(SoC)` values. Public exports at the package
+  top-level: `CellGeometry`, `ElectrodeBalancing`, `derive_balancing`,
+  `derive_balancing_from_result`.
+  `ElectrodeBalancing.pybamm_overrides(soc)` returns a dict keyed by
+  PyBaMM's exact parameter-name strings for direct use with
+  `pybamm.ParameterValues.update(...)`. The math is universal
+  full-cell electrochemistry; only that one method is PyBaMM-flavoured.
+* `tests/test_balancing.py` regression suite covering charge-balance
+  derivation, PyBaMM `x_p` cathode-window convention, voltage-anchored
+  utilization, partial-cutoff validation, and aged check-up usage with
+  `eps_s_* * (1 - LAM_*)` scaling.
+* New `notebooks/pybamm_integration.ipynb` end-to-end tutorial: takes a
+  PyDMA fit on the Molicel INR21700-P45B BoL pseudo-OCV, derives
+  `c_max` / `c_init` via `derive_balancing_from_result`, builds a
+  PyBaMM `ParameterValues`, and verifies the result with a C/500 DFN
+  charge round-trip. All material-property values are sourced from
+  Frank et al. (2025), Table III
+  (DOI 10.1149/1945-7111/adc03c); `Chen2020` is used only as a
+  generic public Li-ion fallback base for slots Frank does not
+  document.
+* `notebooks/parameter_data/frank2025_p45b_table_iii.json`: 24 Frank
+  Table III constants stored as `{value, unit, source}` per entry,
+  acting as the single source of truth consumed by the new
+  notebook.
+
+### Changed
+
+* `notebooks/getting_started.ipynb` is now purely a DMA-analysis
+  tutorial. The inline PyBaMM bridge has been moved out into the
+  dedicated `pybamm_integration.ipynb` and the remaining sections
+  renumbered.
+* `pyproject.toml` now reads the package version dynamically from
+  `src/pydma/_version.py` via `[tool.setuptools.dynamic]` instead of
+  carrying a literal version string. Single source of truth for the
+  package version.
+
 ## [1.0.1] - 2026-04-28
 
 ### Fixed
