@@ -14,13 +14,10 @@ against measured full-cell data using MSE within a region of interest (ROI).
 import numpy as np
 from numpy.typing import NDArray
 from dataclasses import dataclass
-from typing import Optional
 
 from pydma.electrodes.electrode import ElectrodeOCP
 from pydma.electrodes.blend import BlendElectrode
 from pydma.electrodes.inhomogeneity import calculate_inhomogeneity
-from pydma.analysis.dva import precompute_dva
-from pydma.analysis.ica import precompute_ica
 from pydma.analysis.degradation import calculate_mse
 from pydma.preprocessing.smoother import apply_filter
 from pydma.utils.roi import ROISpec, build_roi_mask
@@ -36,10 +33,10 @@ class PreviousLAM:
     MATLAB Reference: objectiveWithPenalty in dma_core.m uses LAM_prev* variables
     to penalize physically implausible degradation between consecutive CUs.
     """
-    lam_anode: Optional[float] = None
-    lam_cathode: Optional[float] = None
-    lam_anode_blend1: Optional[float] = None
-    lam_anode_blend2: Optional[float] = None
+    lam_anode: float | None = None
+    lam_cathode: float | None = None
+    lam_anode_blend1: float | None = None
+    lam_anode_blend2: float | None = None
 
 
 @dataclass
@@ -155,7 +152,7 @@ def _interp1_linear_fill0(
     if len(x_unique) < 2:
         return np.zeros_like(xq, dtype=np.float64)
 
-    return np.interp(xq, x_unique, y_unique, left=0.0, right=0.0)
+    return np.asarray(np.interp(xq, x_unique, y_unique, left=0.0, right=0.0))
 
 
 def electrode_potential_on_q(
@@ -877,9 +874,9 @@ def objective_with_penalty(
     inhom_anode_offset: float = 0.0,
     inhom_cathode_offset: float = 0.0,
     inhom_points: int = 61,
-    ref_data: Optional[ReferenceData] = None,
-    prev_lam: Optional[PreviousLAM] = None,
-    penalty_config: Optional[PenaltyConfig] = None,
+    ref_data: ReferenceData | None = None,
+    prev_lam: PreviousLAM | None = None,
+    penalty_config: PenaltyConfig | None = None,
     fit_reverse: bool = False,
 ) -> float:
     """Combined objective function with penalty constraints for DMA optimization.

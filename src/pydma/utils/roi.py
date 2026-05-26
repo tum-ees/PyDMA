@@ -38,14 +38,10 @@ Examples
 (0.05, 0.95)
 """
 
-from __future__ import annotations
-
-from typing import TypeAlias
-
 import numpy as np
 
-ROISpec: TypeAlias = float | tuple[float, float] | list[float] | np.ndarray
-ROIIntervals: TypeAlias = tuple[tuple[float, float], ...]
+type ROISpec = float | tuple[float, float] | list[float] | np.ndarray
+type ROIIntervals = tuple[tuple[float, float], ...]
 
 
 def _try_parse_scalar(value: object) -> float | None:

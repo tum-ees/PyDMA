@@ -5,6 +5,60 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.0] - 2026-05-23
+
+### Changed
+
+* **Dropped Python 3.9, 3.10, 3.11 support.** New minimum is Python 3.12.
+  Removed the `from __future__ import annotations` workarounds in
+  `silicon/strict_sto.py`, `utils/balancing.py`, `utils/roi.py`,
+  `preprocessing/loader.py`, `tests/test_balancing.py` and
+  `doc/create_gif.py`, which were there only to make Python 3.10+
+  `|`-union annotations parse on 3.9.
+  `pyproject.toml` updated: `requires-python = ">=3.12"`,
+  `[tool.black] target-version = ["py312"]`, `[tool.mypy] python_version
+  = "3.12"`, classifier list trimmed to 3.12 only.
+
+* **Bumped runtime dependency floors** to the lowest releases with
+  Python 3.12 wheels: `numpy>=1.26.0`, `scipy>=1.11.4`,
+  `pandas>=2.1.1`, `matplotlib>=3.8.0`, `statsmodels>=0.14.0`. The
+  previous floors (numpy 1.20, scipy 1.7, pandas 1.3, matplotlib 3.4,
+  statsmodels 0.13) were pre-3.12 and would fail to install on a fresh
+  3.12 environment because they pulled `numpy==1.20.0`, which depends
+  on the removed `distutils` module.
+
+* **Typing modernization (PEP 585 / 604 / 695)**: `Tuple/List/Dict/...`
+  → lowercase generics; `Optional[X]` → `X | None`; `Union[X, Y]` →
+  `X | Y`; `TypeAlias` in `utils/roi.py` → `type` statement.
+  Mechanical rewrite via `pyupgrade --py312-plus` followed by
+  `ruff --select F401 --fix` for the now-unused `typing` imports. Zero
+  behaviour change; all 37 tests pass; `notebooks/getting_started.ipynb`
+  re-executes cleanly.
+
+### Added
+
+* `pydma.silicon.strict_sto.pchip_resample_for_pybamm`: PCHIP
+  shape-preserving resample of the raw PAV-filtered silicon OCP onto a
+  uniform sto grid (default 1001 points) with an optional endpoint-V
+  snap to the silicon-saturation V. Produces a smooth strictly-monotone
+  CSV that PyBaMM's CasADi/IDAS interpolant can consume without the
+  ~50 mV V_cell jump that the densely-preserved curve creates at the
+  silicon saturation knee during a discharge. Can also be used as a
+  `DMAAnalyzer` refit input when `DMAConfig(smoothing_points=1)` is set
+  (the default 30 over-smooths the already-PCHIP-smoothed curve and
+  basin-escapes). Replaces the previous `strict_sto_eps_spread` which
+  preserved V-density (good for PyDMA refit) but left the PyBaMM-side
+  knee unmitigated.
+
+* `DMAConfig.random_seed` for deterministic optimizer runs (promoted
+  from a hardcoded `property -> None` to a real dataclass field;
+  default `None` preserves prior nondeterministic behavior), and an
+  opt-in `pytest -m scientific` golden regression suite that runs a
+  full end-to-end DMA fit against pinned RMSE / fitted-parameter /
+  degradation-mode numbers (`tests/test_scientific_regressions.py`,
+  `tests/golden/p45b_serial23_entry01_cu1_nonblend.json`). Catches
+  silent behavior shifts the unit tests miss.
+
 ## [1.0.2] - 2026-05-12
 
 ### Added

@@ -1,0 +1,38 @@
+{
+  "case": "p45b_serial23_entry01_cu1_nonblend",
+  "description": "P45B serial 23, RPT entry01 (CU1), non-blend graphite/NCA fit with speed_preset='fast', seeded DE. Deterministic on numpy/scipy lower-direct floors (numpy>=1.26, scipy>=1.11.4). See tests/_golden_probe.py to regenerate.",
+  "config": {
+    "speed_preset": "fast",
+    "direction": "charge",
+    "smoothing_points": 30,
+    "data_length": 1000,
+    "weight_ocv": 100.0,
+    "weight_dva": 1.0,
+    "weight_ica": 0.0,
+    "req_accepted": 1,
+    "max_tries_overall": 1,
+    "rmse_threshold": 0.01,
+    "allow_anode_inhomogeneity": false,
+    "allow_cathode_inhomogeneity": false,
+    "workers": 1,
+    "random_seed": 1234
+  },
+  "rmse": 0.005286087105272486,
+  "rmse_fit_region": 0.005286087105272486,
+  "rmse_full_range": 0.005286087105272486,
+  "fitted_params": {
+    "alpha_an": 1.0326005771698263,
+    "beta_an": -0.002611712784679901,
+    "alpha_ca": 1.1220909141633584,
+    "beta_ca": -0.10121011740732402,
+    "utilization_an": 0.9684286665235278,
+    "utilization_ca": 0.8911933849367362,
+    "sto_init_an": 0.002529257529410006,
+    "sto_init_ca": 0.9098022128779224
+  },
+  "degradation_modes": {
+    "lli": 0.0,
+    "lam_an": 0.0,
+    "lam_ca": 0.0
+  }
+}

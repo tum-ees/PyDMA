@@ -207,6 +207,30 @@ See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
+**1.1.0 highlights:**
+
+- **New PyBaMM-safe silicon OCP filter:**
+  `pydma.silicon.strict_sto.pchip_resample_for_pybamm` produces a smooth
+  strictly-monotone Si OCP on a uniform sto grid with an optional
+  endpoint-V snap. More stable for PyBaMM's CasADi/IDAS interpolant.
+  Replaces the previous `strict_sto_eps_spread` helper.
+- **LOWESS-smoothing gotcha when refitting a PCHIP curve:** the default
+  `DMAConfig(smoothing_points=30)` over-smooths an already-PCHIP-smoothed
+  input and the optimizer basin-escapes (RMSE jumps from ~3 mV to ~20 mV,
+  γ_Si collapses). When the input OCP is the output of
+  `pchip_resample_for_pybamm`, set `DMAConfig(smoothing_points=1)`.
+- **Python ≥ 3.12 required.** Drops 3.9–3.11 and the `from __future__
+  import annotations` shims. Runtime floors bumped to the lowest
+  releases with 3.12 wheels (`numpy>=1.26`, `scipy>=1.11.4`,
+  `pandas>=2.1.1`, `matplotlib>=3.8`, `statsmodels>=0.14`).
+- **Deterministic optimizer + scientific regression test.**
+  `DMAConfig.random_seed` (default `None`) is now a real field; with a
+  seed the multistart sequence is bit-reproducible. New opt-in
+  `pytest -m scientific` suite locks down a seeded P45B/NCA fit against
+  golden RMSE/parameter/degradation-mode numbers.
+- **Minor:** typing modernized to PEP 585/604/695 and `mypy src/pydma`
+  is clean (narrowings/asserts/casts only — no behavior changes).
+
 **1.0.2 highlights:**
 
 - **New: PyDMA → PyBaMM bridge.** A PyDMA fit now plugs directly into a

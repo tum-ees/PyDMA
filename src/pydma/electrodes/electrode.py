@@ -6,7 +6,6 @@ open circuit potential data for anodes and cathodes.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Union
 import numpy as np
 from scipy.interpolate import interp1d
 
@@ -48,9 +47,9 @@ class ElectrodeOCP:
     voltage: np.ndarray
     name: str = ""
     electrode_type: str = "anode"  # 'anode' or 'cathode'
-    capacity: Optional[float] = None
+    capacity: float | None = None
     is_smoothed: bool = False
-    _interpolator: Optional[interp1d] = field(default=None, repr=False, compare=False)
+    _interpolator: interp1d | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         """Validate and prepare data after initialization."""
@@ -135,7 +134,7 @@ class ElectrodeOCP:
             fill_value=0.0,  # Return 0 outside bounds, matching MATLAB behavior
         )
 
-    def interpolate(self, soc_query: Union[float, np.ndarray]) -> np.ndarray:
+    def interpolate(self, soc_query: float | np.ndarray) -> np.ndarray:
         """
         Interpolate voltage at given SOC values.
 
@@ -154,7 +153,8 @@ class ElectrodeOCP:
         DIFFERENCE FROM MATLAB: MATLAB's interp1(x,y,xq,'linear',0) returns 0
         for values outside the range. We replicate this behavior.
         """
-        return self._interpolator(soc_query)
+        assert self._interpolator is not None, "ElectrodeOCP not initialised; call _build_interpolator first"
+        return np.asarray(self._interpolator(soc_query))
 
     def get_potential_at_scaled_soc(
         self, soc: np.ndarray, alpha: float, beta: float
@@ -251,7 +251,7 @@ class ElectrodeOCP:
             is_smoothed=True,
         )
 
-    def get_voltage_range(self) -> Tuple[float, float]:
+    def get_voltage_range(self) -> tuple[float, float]:
         """
         Get the voltage range of this electrode.
 
@@ -262,7 +262,7 @@ class ElectrodeOCP:
         """
         return float(self.voltage.min()), float(self.voltage.max())
 
-    def get_soc_at_voltage(self, voltage: float) -> Optional[float]:
+    def get_soc_at_voltage(self, voltage: float) -> float | None:
         """
         Get approximate SOC at a given voltage.
 

@@ -58,9 +58,8 @@ needs. They are *not* the per-phase Gr/Si stoichiometries; for those
 use :meth:`pydma.BlendElectrode.get_component_stoichiometry_window`.
 """
 
-from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 
 F_FARADAY = 96485.0  # C / mol
@@ -224,8 +223,8 @@ def derive_balancing(
 def derive_balancing_from_result(
     result,
     geometry: CellGeometry,
-    v_min: Optional[float] = None,
-    v_max: Optional[float] = None,
+    v_min: float | None = None,
+    v_max: float | None = None,
 ) -> ElectrodeBalancing:
     """Convenience wrapper: pull anchored windows from a :class:`DMAResult`.
 
@@ -244,6 +243,8 @@ def derive_balancing_from_result(
     if v_min is None:
         anchored = result.voltage_anchored_windows(on_out_of_range="clip")
     else:
+        # XOR check above guarantees v_max is not None when v_min is not None
+        assert v_max is not None
         anchored = result.voltage_anchored_windows(
             v_min=float(v_min), v_max=float(v_max), on_out_of_range="clip"
         )

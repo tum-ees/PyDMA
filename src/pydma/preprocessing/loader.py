@@ -5,10 +5,8 @@ This module provides functions for loading electrode OCP and pOCV data
 from various file formats with automatic column name detection.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
@@ -127,7 +125,7 @@ def _normalize_name(name: Any) -> str:
     return "".join(ch for ch in str(name).lower() if ch.isalnum())
 
 
-def _find_matching_name(names: List[str], patterns: List[str]) -> Optional[str]:
+def _find_matching_name(names: list[str], patterns: list[str]) -> str | None:
     """Find the best matching name using exact match first, then safe substring match."""
     normalized_names = [(name, _normalize_name(name)) for name in names]
 
@@ -148,7 +146,7 @@ def _find_matching_name(names: List[str], patterns: List[str]) -> Optional[str]:
     return None
 
 
-def _extract_capacity_value(values: Any) -> Optional[float]:
+def _extract_capacity_value(values: Any) -> float | None:
     """Extract a scalar capacity from a scalar, repeated series, or capacity trace."""
     arr = np.asarray(values, dtype=np.float64).flatten()
     arr = arr[np.isfinite(arr)]
@@ -163,7 +161,7 @@ def _extract_capacity_value(values: Any) -> Optional[float]:
     return float(arr.max())
 
 
-def _coerce_mat_container(data: Any) -> Optional[Dict[str, Any]]:
+def _coerce_mat_container(data: Any) -> dict[str, Any] | None:
     """Convert MATLAB-loaded structs or records to plain Python dictionaries."""
     if isinstance(data, dict):
         return {str(k): v for k, v in data.items() if not str(k).startswith("__")}
@@ -209,7 +207,7 @@ def _iter_mat_candidates(data: Any):
             queue.extend(list(current))
 
 
-def _extract_table_rows(container: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _extract_table_rows(container: dict[str, Any]) -> list[dict[str, Any]]:
     """Convert a MATLAB table-like dict of columns to a list of row dicts."""
     if not container:
         return []
@@ -230,7 +228,7 @@ def _extract_table_rows(container: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     rows = []
     for idx in range(row_count):
-        row: Dict[str, Any] = {}
+        row: dict[str, Any] = {}
         for key, value in container.items():
             arr = np.asarray(value)
             if arr.ndim == 0:
@@ -243,7 +241,7 @@ def _extract_table_rows(container: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _find_data_keys(mapping: Dict[str, Any], electrode_type: str) -> Tuple[Optional[str], Optional[str]]:
+def _find_data_keys(mapping: dict[str, Any], electrode_type: str) -> tuple[str | None, str | None]:
     """Find SOC/capacity and voltage keys in a dict-like MATLAB container."""
     keys = list(mapping.keys())
 
@@ -261,7 +259,7 @@ def _find_data_keys(mapping: Dict[str, Any], electrode_type: str) -> Tuple[Optio
     return x_key, voltage_key
 
 
-def _extract_fullcell_capacity_from_mapping(mapping: Dict[str, Any], x_key: Optional[str]) -> Optional[float]:
+def _extract_fullcell_capacity_from_mapping(mapping: dict[str, Any], x_key: str | None) -> float | None:
     """Extract total capacity from a full-cell data mapping when available."""
     keys = list(mapping.keys())
     capacity_key = _find_matching_name(keys, FULLCELL_CAPACITY_COLUMN_PATTERNS)
@@ -311,11 +309,11 @@ def _cu_sort_key(value: str) -> tuple[int, str]:
 
 
 def _extract_aging_study_from_mat(
-    mat_data: Dict[str, Any],
+    mat_data: dict[str, Any],
     direction: str,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray, Optional[float]]]:
+) -> dict[str, tuple[np.ndarray, np.ndarray, float | None]]:
     """Extract multi-CU pOCV data from a single MATLAB file."""
-    results: Dict[str, Tuple[np.ndarray, np.ndarray, Optional[float]]] = {}
+    results: dict[str, tuple[np.ndarray, np.ndarray, float | None]] = {}
     direction = direction.lower()
 
     explicit_direction_keys = {
@@ -349,9 +347,10 @@ def _extract_aging_study_from_mat(
             parsed_any = False
             for row in rows:
                 row_container = _coerce_mat_container(row) or row
-                cu_key = _find_matching_name(list(row_container.keys()), ["CU", "cu"])
-                if cu_key is None:
+                cu_key_match = _find_matching_name(list(row_container.keys()), ["CU", "cu"])
+                if cu_key_match is None:
                     continue
+                cu_key = cu_key_match
 
                 data_key = _find_matching_name(
                     list(row_container.keys()),
@@ -383,7 +382,7 @@ def _extract_aging_study_from_mat(
 def auto_detect_columns(
     df: pd.DataFrame,
     electrode_type: str = "anode",
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     Auto-detect SOC, voltage, and capacity columns in a DataFrame.
 
@@ -461,7 +460,7 @@ def auto_detect_columns(
 
 def _extract_soc_voltage_from_mat(
     data: Any, electrode_type: str
-) -> Tuple[np.ndarray, np.ndarray, Optional[float]]:
+) -> tuple[np.ndarray, np.ndarray, float | None]:
     """
     Extract SOC and voltage from MATLAB .mat file structure.
 
@@ -495,13 +494,12 @@ def _extract_soc_voltage_from_mat(
 
         soc = np.asarray(mapping[x_key], dtype=np.float64).flatten()
         voltage = np.asarray(mapping[voltage_key], dtype=np.float64).flatten()
-        capacity = (
-            _extract_fullcell_capacity_from_mapping(mapping, x_key)
-            if electrode_type == "fullcell"
-            else _extract_capacity_value(
-                mapping.get(_find_matching_name(list(mapping.keys()), CAPACITY_COLUMN_PATTERNS))
-            )
-        )
+        if electrode_type == "fullcell":
+            capacity = _extract_fullcell_capacity_from_mapping(mapping, x_key)
+        else:
+            cap_key = _find_matching_name(list(mapping.keys()), CAPACITY_COLUMN_PATTERNS)
+            cap_val = mapping.get(cap_key) if cap_key is not None else None
+            capacity = _extract_capacity_value(cap_val)
         return soc, voltage, capacity
 
     raise ValueError(
@@ -511,11 +509,11 @@ def _extract_soc_voltage_from_mat(
 
 
 def load_ocp(
-    filepath: Union[str, Path],
+    filepath: str | Path,
     electrode_type: str = "anode",
-    soc_col: Optional[str] = None,
-    voltage_col: Optional[str] = None,
-    capacity_col: Optional[str] = None,
+    soc_col: str | None = None,
+    voltage_col: str | None = None,
+    capacity_col: str | None = None,
     smooth: bool = False,
     smooth_window: int = 30,
 ) -> "ElectrodeOCP":
@@ -639,13 +637,13 @@ def load_ocp(
 
 
 def load_pocv(
-    filepath: Union[str, Path],
-    soc_col: Optional[str] = None,
-    voltage_col: Optional[str] = None,
-    capacity_col: Optional[str] = None,
+    filepath: str | Path,
+    soc_col: str | None = None,
+    voltage_col: str | None = None,
+    capacity_col: str | None = None,
     smooth: bool = False,
     smooth_window: int = 30,
-) -> Tuple[np.ndarray, np.ndarray, Optional[float]]:
+) -> tuple[np.ndarray, np.ndarray, float | None]:
     """
     Load pseudo-OCV (pOCV) data from file.
 
@@ -730,10 +728,10 @@ def load_pocv(
 
 
 def load_aging_study(
-    data_path: Union[str, Path],
+    data_path: str | Path,
     direction: str = "charge",
     cu_pattern: str = "CU{i}",
-) -> Dict[str, Tuple[np.ndarray, np.ndarray, Optional[float]]]:
+) -> dict[str, tuple[np.ndarray, np.ndarray, float | None]]:
     """
     Load multiple pOCV measurements from an aging study.
 

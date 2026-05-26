@@ -5,8 +5,8 @@ This module defines the DMAConfig dataclass which holds all configuration
 parameters for the degradation mode analysis.
 """
 
-from dataclasses import dataclass, field
-from typing import Literal, Optional, Tuple, List, Union
+from dataclasses import dataclass
+from typing import Any
 import numpy as np
 from pydma.utils.roi import ROISpec, get_roi_outer_bounds
 
@@ -183,8 +183,8 @@ class DMAConfig:
     # Parameter bounds for [alpha_an, beta_an, alpha_ca, beta_ca]
     # MATLAB Reference: main_DMA.m lines 196-197
     # Note: MATLAB comments mention wider defaults (0.8 to 2.0), but actual code uses tighter bounds
-    lower_bounds: Tuple[float, float, float, float] = (1.0, -1.0, 1.0, -1.0)
-    upper_bounds: Tuple[float, float, float, float] = (2.0, 0.0, 2.1, 0.0)
+    lower_bounds: tuple[float, float, float, float] = (1.0, -1.0, 1.0, -1.0)
+    upper_bounds: tuple[float, float, float, float] = (2.0, 0.0, 2.1, 0.0)
 
     # Anode blend settings
     use_anode_blend: bool = False
@@ -201,8 +201,8 @@ class DMAConfig:
     allow_anode_inhomogeneity: bool = False
     allow_cathode_inhomogeneity: bool = False
     allow_first_cycle_inhomogeneity: bool = True
-    max_inhomogeneity: Union[float, Tuple[float, float]] = 0.3
-    max_inhomogeneity_delta: Union[float, Tuple[float, float]] = 0.1
+    max_inhomogeneity: float | tuple[float, float] = 0.3
+    max_inhomogeneity_delta: float | tuple[float, float] = 0.1
     inhom_anode_offset: float = 0.0
     inhom_cathode_offset: float = 0.0
 
@@ -227,6 +227,10 @@ class DMAConfig:
     speed_preset: str = "thorough"  # 'fast', 'medium', or 'thorough'
     algorithm: str = "differential_evolution"
     workers: int = 1  # Number of parallel workers for DE (1 = single-threaded)
+    # None = nondeterministic. When set, the i-th multistart run uses seed+i
+    # (see core.optimizer.DMAOptimizer.run), so a single config seed
+    # locks the whole multi-run sequence.
+    random_seed: int | None = None
 
     # Plotting labels
     label_cathode: str = "Cathode"
@@ -350,7 +354,7 @@ class DMAConfig:
         opts["workers"] = self.workers
         return opts
 
-    def get_inhomogeneity_bounds(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    def get_inhomogeneity_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
         """
         Get inhomogeneity bounds as (anode, cathode) tuples.
 
@@ -371,7 +375,7 @@ class DMAConfig:
 
         return ((max_an, delta_an), (max_ca, delta_ca))
 
-    def get_active_param_mask(self) -> List[bool]:
+    def get_active_param_mask(self) -> list[bool]:
         """
         Get mask indicating which of the 8 parameters are active.
 
@@ -398,8 +402,8 @@ class DMAConfig:
         ]
 
     def get_full_bounds(
-        self, inhom_an_prev: Optional[float] = None, inhom_ca_prev: Optional[float] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, inhom_an_prev: float | None = None, inhom_ca_prev: float | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Get full 8-element lower and upper bounds arrays.
 
@@ -465,8 +469,8 @@ class DMAConfig:
 
     def get_initial_guess(
         self,
-        inhom_an_prev: Optional[float] = None,
-        inhom_ca_prev: Optional[float] = None,
+        inhom_an_prev: float | None = None,
+        inhom_ca_prev: float | None = None,
     ) -> np.ndarray:
         """Get a MATLAB-style initial guess vector clipped to active bounds."""
         if self.use_anode_blend:
@@ -484,9 +488,9 @@ class DMAConfig:
             init[7] = 0.0
 
         lb, ub = self.get_full_bounds(inhom_an_prev=inhom_an_prev, inhom_ca_prev=inhom_ca_prev)
-        return np.clip(init, lb, ub)
+        return np.asarray(np.clip(init, lb, ub))
 
-    def calculate_roi_bounds(self) -> Tuple[float, float]:
+    def calculate_roi_bounds(self) -> tuple[float, float]:
         """
         Calculate the overall ROI bounds considering all active fitting methods.
 
@@ -540,7 +544,7 @@ class DMAConfig:
         return self.allow_anode_inhomogeneity or self.allow_cathode_inhomogeneity
 
     @property
-    def filter_type(self) -> Optional[str]:
+    def filter_type(self) -> str | None:
         """Filter type for pre-smoothing raw OCV data.
 
         MATLAB-compatible: Uses LOWESS filter with smoothing_points window
@@ -560,12 +564,7 @@ class DMAConfig:
         """
         return {"window": self.smoothing_points}
 
-    @property
-    def random_seed(self) -> Optional[int]:
-        """Random seed for optimization."""
-        return None  # Use random seed by default
-
-    def get_bounds(self) -> List[Tuple[float, float]]:
+    def get_bounds(self) -> list[tuple[float, float]]:
         """Get parameter bounds as list of (min, max) tuples for the optimizer."""
         lb, ub = self.get_full_bounds()
         return list(zip(lb, ub))
@@ -603,7 +602,7 @@ class DMAConfig:
         >>> # With custom overrides
         >>> config = DMAConfig.lfp_preset(rmse_threshold=0.02, workers=-1)
         """
-        defaults = dict(
+        defaults: dict[str, Any] = dict(
             # Weight ratio 10:3 instead of default 100:1
             weight_ocv=10.0,
             weight_dva=3.0,

@@ -1,8 +1,6 @@
 """Tests for ``pydma.utils.balancing`` — the simulator-agnostic
 ``c_max`` / ``c_init`` derivation from a PyDMA fit + cell geometry."""
 
-from __future__ import annotations
-
 import math
 import sys
 from pathlib import Path
