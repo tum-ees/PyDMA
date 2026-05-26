@@ -16,9 +16,10 @@ Conventions used in this module:
   notebook and script users get consistent publication-style output.
 """
 
-from typing import Sequence
+from collections.abc import Sequence
 import re
 import warnings
+from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 import matplotlib.pyplot as plt
@@ -58,7 +59,7 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> None:
         If True, enable full LaTeX rendering via ``text.usetex``.
         Requires a working TeX installation in the runtime environment.
     """
-    style = {
+    style: dict[str, Any] = {
         'font.size': 10,
         'axes.labelsize': 11,
         'axes.titlesize': 12,
@@ -700,7 +701,7 @@ def plot_ocv_comparison(
             return False
         vmin = np.nanmin(values)
         vmax = np.nanmax(values)
-        return (vmin >= -1e-6) and (vmax <= 1.0 + 1e-6)
+        return bool((vmin >= -1e-6) and (vmax <= 1.0 + 1e-6))
 
     is_normalized = _is_normalized_capacity(measured_capacity)
     if simulated_capacity is not None:

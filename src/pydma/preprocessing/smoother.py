@@ -7,14 +7,13 @@ moving average filters.
 """
 
 import numpy as np
-from typing import Optional, Literal, Union
 from scipy.signal import savgol_filter
 from scipy.ndimage import uniform_filter1d
 
 
 def smooth_lowess(
     y: np.ndarray,
-    x: Optional[np.ndarray] = None,
+    x: np.ndarray | None = None,
     frac: float = 0.1,
     it: int = 3,
 ) -> np.ndarray:
@@ -112,7 +111,7 @@ def smooth_lowess(
     # Map smoothed data back to original x grid
     smoothed = np.interp(x, x_sorted, smoothed)
 
-    return smoothed
+    return np.asarray(smoothed)
 
 
 def smooth_savgol(
@@ -168,7 +167,7 @@ def smooth_savgol(
         return y_smooth
 
     try:
-        return savgol_filter(y, window_length, polyorder)
+        return np.asarray(savgol_filter(y, window_length, polyorder))
     except ValueError:
         # MATLAB behavior: if sgolayfilt fails, return original data
         return y.copy()
@@ -201,7 +200,7 @@ def smooth_moving_average(
     y = np.asarray(y).flatten()
     window = max(1, int(window))
 
-    return uniform_filter1d(y, size=window, mode="nearest")
+    return np.asarray(uniform_filter1d(y, size=window, mode="nearest"))
 
 
 def smooth_gaussian(
@@ -226,14 +225,14 @@ def smooth_gaussian(
     from scipy.ndimage import gaussian_filter1d
 
     y = np.asarray(y).flatten()
-    return gaussian_filter1d(y, sigma=sigma, mode="nearest")
+    return np.asarray(gaussian_filter1d(y, sigma=sigma, mode="nearest"))
 
 
 def apply_filter(
     data: np.ndarray,
     method: str = "sgolay",
-    window: Optional[int] = None,
-    window_frac: Optional[float] = None,
+    window: int | None = None,
+    window_frac: float | None = None,
     order: int = 3,
     repeat: int = 1,
     fill_outliers: bool = False,

@@ -4,8 +4,6 @@ Run from PyDMA root:
     python doc/create_gif.py
 """
 
-from __future__ import annotations
-
 import argparse
 import re
 import shutil

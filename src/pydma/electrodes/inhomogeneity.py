@@ -9,7 +9,6 @@ the electrode, which causes voltage averaging effects.
 """
 
 import numpy as np
-from typing import Tuple, Optional
 from functools import lru_cache
 
 
@@ -21,7 +20,7 @@ _INHOM_X_MAX = 1.5
 
 
 @lru_cache(maxsize=32)
-def _get_inhomogeneity_weights(sigma: float) -> Tuple[np.ndarray, np.ndarray]:
+def _get_inhomogeneity_weights(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     """
     Calculate Gaussian weights for inhomogeneity model.
 
@@ -142,7 +141,7 @@ def calculate_inhomogeneity(
         )
 
     # Weighted average across x dimension
-    voltage_mean = voltage_at_xq @ weights
+    voltage_mean: np.ndarray = voltage_at_xq @ weights
 
     return voltage_mean
 
@@ -191,7 +190,7 @@ def calculate_inhomogeneity_for_electrode(
     )
 
 
-def get_inhomogeneity_distribution(sigma: float) -> Tuple[np.ndarray, np.ndarray]:
+def get_inhomogeneity_distribution(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     """
     Get the SOC distribution used in inhomogeneity model.
 

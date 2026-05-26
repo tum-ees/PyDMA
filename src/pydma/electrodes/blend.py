@@ -7,7 +7,6 @@ of two component materials.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
 import numpy as np
 from scipy.interpolate import interp1d
 
@@ -49,10 +48,10 @@ class BlendElectrode:
     blend2: ElectrodeOCP
     electrode_type: str = "anode"
     name: str = ""
-    n_points: Optional[int] = None
-    _common_voltage: Optional[np.ndarray] = field(default=None, repr=False)
-    _q_blend1_interp: Optional[np.ndarray] = field(default=None, repr=False)
-    _q_blend2_interp: Optional[np.ndarray] = field(default=None, repr=False)
+    n_points: int | None = None
+    _common_voltage: np.ndarray | None = field(default=None, repr=False)
+    _q_blend1_interp: np.ndarray | None = field(default=None, repr=False)
+    _q_blend2_interp: np.ndarray | None = field(default=None, repr=False)
 
     def __post_init__(self):
         """Prepare blend electrode data after initialization."""
@@ -72,7 +71,7 @@ class BlendElectrode:
         # Prepare common voltage grid and interpolated Q values
         self._prepare_blend_data()
 
-    def _prepare_blend_data(self, n_points: Optional[int] = None):
+    def _prepare_blend_data(self, n_points: int | None = None):
         """
         Prepare common voltage grid and Q interpolations.
 
@@ -131,7 +130,7 @@ class BlendElectrode:
         )
         self._q_blend2_interp = q2_of_v(self._common_voltage)
 
-    def get_blend_curve(self, gamma: float) -> Tuple[np.ndarray, np.ndarray]:
+    def get_blend_curve(self, gamma: float) -> tuple[np.ndarray, np.ndarray]:
         """
         Calculate blended electrode curve for given blend2 fraction.
 
@@ -162,6 +161,9 @@ class BlendElectrode:
 
         if self._common_voltage is None:
             self._prepare_blend_data()
+        assert self._common_voltage is not None
+        assert self._q_blend1_interp is not None
+        assert self._q_blend2_interp is not None
 
         # Weighted sum of capacities at each voltage
         # DIFFERENCE FROM MATLAB: Same algorithm, different implementation
@@ -208,6 +210,9 @@ class BlendElectrode:
 
         if self._common_voltage is None:
             self._prepare_blend_data()
+        assert self._common_voltage is not None
+        assert self._q_blend1_interp is not None
+        assert self._q_blend2_interp is not None
 
         blend_soc_arr = np.asarray(blend_soc, dtype=float)
 
@@ -259,7 +264,7 @@ class BlendElectrode:
         }
 
     def get_component_stoichiometry_window(
-        self, gamma: float, blend_soc_window: Tuple[float, float]
+        self, gamma: float, blend_soc_window: tuple[float, float]
     ) -> dict[str, float]:
         """
         Return component stoichiometries at the two fitted blend endpoints.
@@ -322,6 +327,7 @@ class BlendElectrode:
         """Get the common voltage grid."""
         if self._common_voltage is None:
             self._prepare_blend_data()
+        assert self._common_voltage is not None
         return self._common_voltage
 
     @property
@@ -329,6 +335,7 @@ class BlendElectrode:
         """Get interpolated Q values for blend1 on common voltage grid."""
         if self._q_blend1_interp is None:
             self._prepare_blend_data()
+        assert self._q_blend1_interp is not None
         return self._q_blend1_interp
 
     @property
@@ -336,6 +343,7 @@ class BlendElectrode:
         """Get interpolated Q values for blend2 on common voltage grid."""
         if self._q_blend2_interp is None:
             self._prepare_blend_data()
+        assert self._q_blend2_interp is not None
         return self._q_blend2_interp
 
     def get_single_component(self, component: int = 1) -> ElectrodeOCP:
@@ -359,7 +367,7 @@ class BlendElectrode:
         else:
             raise ValueError(f"component must be 1 or 2, got {component}")
 
-    def get_blended_ocp(self, gamma: float) -> Tuple[np.ndarray, np.ndarray]:
+    def get_blended_ocp(self, gamma: float) -> tuple[np.ndarray, np.ndarray]:
         """Alias for get_blend_curve for API compatibility."""
         return self.get_blend_curve(gamma)
 

@@ -33,7 +33,9 @@ Example
 """
 
 from pathlib import Path
-from typing import Callable, Any, Dict, List, Tuple, Union
+from typing import Any
+
+from collections.abc import Callable
 from functools import partial
 import warnings
 import numpy as np
@@ -56,7 +58,6 @@ from pydma.utils.roi import build_roi_mask
 from pydma.core.objectives import (
     combined_objective,
     objective_with_penalty,
-    calculate_full_cell_ocv,
     fit_ocv,
     fit_dva,
     fit_ica,
@@ -296,7 +297,7 @@ class DMAAnalyzer:
         xq: NDArray[np.floating],
     ) -> NDArray[np.floating]:
         """Linear interpolation with linear extrapolation at the ends (MATLAB interp1 'extrap')."""
-        yq = np.interp(xq, x, y)
+        yq = np.asarray(np.interp(xq, x, y))
         if len(x) < 2:
             return yq
 
@@ -347,7 +348,8 @@ class DMAAnalyzer:
         voltage = np.asarray(electrode.voltage, dtype=np.float64).flatten()
 
         # MATLAB behavior: enforce non-decreasing SOC for non-blend curves
-        soc, voltage = self._ensure_monotonic(soc, voltage, drop_decreasing=True)
+        # (numpy returns a less-specific ndarray type; assignment is widening)
+        soc, voltage = self._ensure_monotonic(soc, voltage, drop_decreasing=True)  # type: ignore[assignment]
 
         # Smooth voltage (LOWESS) using index-based smoothing (MATLAB smooth)
         from pydma.preprocessing.smoother import apply_filter
@@ -391,7 +393,7 @@ class DMAAnalyzer:
         voltage = np.asarray(electrode.voltage, dtype=np.float64).flatten()
 
         # Flip if needed; optionally drop decreasing points (blend2 keeps them)
-        soc, voltage = self._ensure_monotonic(
+        soc, voltage = self._ensure_monotonic(  # type: ignore[assignment]
             soc,
             voltage,
             drop_decreasing=drop_decreasing,
@@ -485,7 +487,7 @@ class DMAAnalyzer:
             raise ValueError("Measured capacity must contain at least 2 valid points.")
 
         # MATLAB behavior: enforce non-decreasing capacity for full-cell data
-        meas_capacity, meas_voltage = self._ensure_monotonic(
+        meas_capacity, meas_voltage = self._ensure_monotonic(  # type: ignore[assignment]
             meas_capacity,
             meas_voltage,
             drop_decreasing=True,
@@ -500,7 +502,7 @@ class DMAAnalyzer:
         # =============================================================================
         # Full-cell OCV must have: voltage INCREASES with increasing SOC
         # If not, auto-correct by inverting SOC axis and warn the user
-        meas_capacity, meas_voltage, was_corrected = self._validate_fullcell_ocv_convention(
+        meas_capacity, meas_voltage, was_corrected = self._validate_fullcell_ocv_convention(  # type: ignore[assignment]
             meas_capacity,
             meas_voltage,
         )
@@ -527,7 +529,7 @@ class DMAAnalyzer:
         from pydma.preprocessing.smoother import apply_filter
         meas_voltage = apply_filter(
             meas_voltage,
-            method=self.config.filter_type,
+            method=self.config.filter_type or "sgolay",
             **self.config.filter_kwargs,
         )
 
@@ -576,6 +578,12 @@ class DMAAnalyzer:
 
         Otherwise uses combined_objective (no penalty).
         """
+        # Resolve anode/cathode with self.* fallback once, then narrow for mypy.
+        effective_anode = anode if anode is not None else self.anode
+        effective_cathode = cathode if cathode is not None else self.cathode
+        assert effective_anode is not None, "Anode must be set on analyzer or passed in"
+        assert effective_cathode is not None, "Cathode must be set on analyzer or passed in"
+
         # Check if we should use penalty constraints
         # Penalty is applied when we have previous LAM values (not first CU)
         use_penalty = (
@@ -585,6 +593,9 @@ class DMAAnalyzer:
         )
 
         if use_penalty:
+            # Narrow types for mypy: use_penalty implies all three are not None.
+            assert self.reference_data is not None
+            assert actual_capacity is not None
             # Create penalty config from DMAConfig
             penalty_config = PenaltyConfig(
                 max_anode_gain=self.config.max_anode_gain,
@@ -611,8 +622,8 @@ class DMAAnalyzer:
 
             return partial(
                 objective_with_penalty,
-                anode=anode or self.anode,
-                cathode=cathode or self.cathode,
+                anode=effective_anode,
+                cathode=effective_cathode,
                 meas_voltage=meas_voltage,
                 meas_dva=meas_dva,
                 meas_ica=meas_ica,
@@ -644,8 +655,8 @@ class DMAAnalyzer:
             # First CU or no penalty config - use base objective
             return partial(
                 combined_objective,
-                anode=anode or self.anode,
-                cathode=cathode or self.cathode,
+                anode=effective_anode,
+                cathode=effective_cathode,
                 meas_voltage=meas_voltage,
                 meas_dva=meas_dva,
                 meas_ica=meas_ica,
@@ -680,6 +691,7 @@ class DMAAnalyzer:
         reference_capacity: float | None = None,
         actual_capacity: float | None = None,
         progress_callback: Callable[[int, int, int], None] | None = None,
+        de_constraints: Any = None,
         **kwargs: Any,
     ) -> DMAResult:
         """Perform Degradation Mode Analysis.
@@ -710,6 +722,16 @@ class DMAAnalyzer:
         progress_callback : Callable, optional
             Called after each optimization run with
             (accepted_count, rejected_count, run_number)
+        de_constraints : scipy.optimize.NonlinearConstraint or list, optional
+            Extra equality/inequality constraints forwarded directly to
+            ``scipy.optimize.differential_evolution`` via its ``constraints``
+            kwarg. **Special case** for advanced fits that need to enforce a
+            physical invariant the standard objective cannot express on its
+            own — e.g. pinning the silicon capacity share
+            (``Δn_Si / delta_c_an``) across charge/discharge directions for
+            phase lithium conservation. Most users should not need this; the
+            standard OCV/DVA/ICA weighted objective is sufficient for
+            single-CU fits.
         **kwargs : Any
             Additional arguments passed to optimizer
 
@@ -741,8 +763,10 @@ class DMAAnalyzer:
         if reference_capacity is not None:
             self.reference_capacity = reference_capacity
 
-        # Validate inputs
+        # Validate inputs (raises if either is None)
         self._validate_inputs(measured_capacity, measured_voltage)
+        assert measured_capacity is not None
+        assert measured_voltage is not None
 
         # Prepare measured data to match MATLAB preprocessing
         q, meas_voltage, q0, cap_span = self._prepare_measured_data(
@@ -755,7 +779,11 @@ class DMAAnalyzer:
                 raise ValueError(f"actual_capacity must be positive, got {actual_capacity}")
         effective_capacity = actual_capacity if actual_capacity is not None else cap_span
 
-        # Prepare electrodes to match MATLAB preprocessing
+        # Prepare electrodes to match MATLAB preprocessing.
+        # _validate_inputs (above) ensures self.anode / self.cathode are set;
+        # explicit asserts narrow the type for mypy.
+        assert self.anode is not None, "Anode must be set before analyze() (use set_anode)"
+        assert self.cathode is not None, "Cathode must be set before analyze() (use set_cathode)"
         anode = self._prepare_electrode(self.anode)
         cathode = self._prepare_electrode(self.cathode)
         anode_is_blend = isinstance(anode, BlendElectrode)
@@ -841,6 +869,10 @@ class DMAAnalyzer:
         )
 
         optimizer = DMAOptimizer(self.config, objective, bounds, rmse_fn=rmse_fn)
+
+        # Forward de_constraints into DE's `constraints` kwarg (special case).
+        if de_constraints is not None:
+            kwargs.setdefault("constraints", de_constraints)
 
         opt_result: MultiRunResult = optimizer.run(
             progress_callback=progress_callback,
@@ -1073,17 +1105,17 @@ class DMAAnalyzer:
     def analyze_aging_study(
         self,
         pocv_data: (
-            Dict[
+            dict[
                 str,
-                Union[
-                    Tuple[NDArray, NDArray],
-                    Tuple[NDArray, NDArray, float | None],
-                ],
+                (
+                    tuple[NDArray, NDArray] |
+                    tuple[NDArray, NDArray, float | None]
+                ),
             ]
             | str
             | Path
         ),
-        efc_values: Union[Dict[str, float], List[float], None] = None,
+        efc_values: dict[str, float] | list[float] | None = None,
         progress_callback: Callable[[int, int, int], None] | None = None,
         reset: bool = True,
     ) -> AgingStudyResults:
@@ -1127,13 +1159,15 @@ class DMAAnalyzer:
             self.reset_state()
 
         if isinstance(pocv_data, (str, Path)):
-            pocv_data = self.load_aging_study(pocv_data)
+            pocv_dict: dict[str, tuple[Any, ...]] = self.load_aging_study(pocv_data)
+        else:
+            pocv_dict = pocv_data  # type: ignore[assignment]
 
-        self._check_aging_study_capacity_inputs(pocv_data)
+        self._check_aging_study_capacity_inputs(pocv_dict)
 
         study_results = AgingStudyResults()
 
-        for idx, (cu_name, data_tuple) in enumerate(pocv_data.items()):
+        for idx, (cu_name, data_tuple) in enumerate(pocv_dict.items()):
             if len(data_tuple) == 3:
                 cap, volt, actual_capacity = data_tuple
                 if actual_capacity is None:
@@ -1175,7 +1209,7 @@ class DMAAnalyzer:
         self,
         data_path: str | Path,
         cu_pattern: str = "CU{i}",
-    ) -> Dict[str, Tuple[NDArray[np.floating], NDArray[np.floating], float | None]]:
+    ) -> dict[str, tuple[NDArray[np.floating], NDArray[np.floating], float | None]]:
         """Load an aging study using the analyzer's configured direction."""
         return load_aging_study_data(
             data_path,
@@ -1185,7 +1219,7 @@ class DMAAnalyzer:
 
     def _check_aging_study_capacity_inputs(
         self,
-        pocv_data: Dict[str, Tuple[Any, ...]],
+        pocv_data: dict[str, tuple[Any, ...]],
     ) -> None:
         """Warn or fail on ambiguous aging-study inputs without actual capacities."""
         two_tuple_cus: list[str] = []

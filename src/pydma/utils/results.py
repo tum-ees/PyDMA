@@ -6,7 +6,7 @@ including single-CU results and multi-CU aging study results.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any
 import numpy as np
 import pandas as pd
 
@@ -55,7 +55,7 @@ class DegradationModes:
         """Alias for lam_cathode."""
         return self.lam_cathode
 
-    def to_dict(self) -> Dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         """Convert to dictionary."""
         return {
             "lam_anode": self.lam_anode,
@@ -133,10 +133,10 @@ class FittedParams:
     beta_an: float
     alpha_ca: float
     beta_ca: float
-    gamma_blend2_an: Optional[float] = 0.0
-    gamma_blend2_ca: Optional[float] = 0.0
-    inhom_an: Optional[float] = 0.0
-    inhom_ca: Optional[float] = 0.0
+    gamma_blend2_an: float | None = 0.0
+    gamma_blend2_ca: float | None = 0.0
+    inhom_an: float | None = 0.0
+    inhom_ca: float | None = 0.0
 
     # ============================================================
     # Derived stoichiometry properties for PyBaMM users
@@ -191,7 +191,7 @@ class FittedParams:
         return 1.0 + delith_position
 
     @property
-    def sto_window_an(self) -> Tuple[float, float]:
+    def sto_window_an(self) -> tuple[float, float]:
         """
         Anode stoichiometry window as (sto_at_0%_SOC, sto_at_100%_SOC).
 
@@ -209,7 +209,7 @@ class FittedParams:
         return (sto_at_0, sto_at_100)
 
     @property
-    def sto_window_ca(self) -> Tuple[float, float]:
+    def sto_window_ca(self) -> tuple[float, float]:
         """
         Cathode stoichiometry window as (x_at_0%_SOC, x_at_100%_SOC).
 
@@ -227,8 +227,8 @@ class FittedParams:
         return (x_at_0, x_at_100)
 
     def sto_window_an_per_phase(
-        self, blend_electrode, gamma: Optional[float] = None
-    ) -> Dict[str, Any]:
+        self, blend_electrode, gamma: float | None = None
+    ) -> dict[str, Any]:
         """
         Return graphite/silicon stoichiometry windows for a blend anode.
 
@@ -260,9 +260,10 @@ class FittedParams:
                 "blend_electrode must provide get_component_stoichiometry_window"
             )
         # Keep sto_window_an unchanged; this explicit helper returns phase windows.
-        return blend_electrode.get_component_stoichiometry_window(
+        result: dict[str, Any] = blend_electrode.get_component_stoichiometry_window(
             float(gamma), self.sto_window_an
         )
+        return result
 
     def with_voltage_anchored_windows(
         self,
@@ -426,7 +427,7 @@ class FittedParams:
             dtype=float,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary including derived stoichiometry values."""
         return {
             "alpha_an": self.alpha_an,
@@ -555,7 +556,7 @@ class DMAResult:
     )
 
     # Optional reference data (from first CU)
-    reference_data: Optional["ReferenceData"] = None
+    reference_data: "ReferenceData | None" = None
 
     # Measured and reconstructed OCV (optional - may be set later)
     soc_measured: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -610,7 +611,7 @@ class DMAResult:
     status: str = "accepted"
     algorithm: str = "differential_evolution"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """
         Convert result to dictionary for serialization.
 
@@ -641,10 +642,10 @@ class DMAResult:
     # ============================================================
     def voltage_anchored_windows(
         self,
-        v_min: Optional[float] = None,
-        v_max: Optional[float] = None,
+        v_min: float | None = None,
+        v_max: float | None = None,
         on_out_of_range: str = "raise",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Re-anchor stoichiometry windows so endpoints correspond to the voltage
         cutoffs of the measured pseudo-OCV (e.g. 2.5 V / 4.2 V) rather than to
@@ -801,7 +802,7 @@ class DMAResult:
         electrode: Any,
         sto: np.ndarray,
         *,
-        gamma: Optional[float] = None,
+        gamma: float | None = None,
         allow_extrapolation: bool = False,
         label: str = "electrode",
     ) -> np.ndarray:
@@ -844,9 +845,9 @@ class DMAResult:
                     f"{np.nanmax(sto):.6g}] lies outside OCP domain "
                     f"[{x_min:.6g}, {x_max:.6g}]."
                 )
-            return np.interp(sto, x_unique, y_unique)
+            return np.asarray(np.interp(sto, x_unique, y_unique))
 
-        yq = np.interp(sto, x_unique, y_unique)
+        yq = np.asarray(np.interp(sto, x_unique, y_unique))
         left = sto < x_unique[0]
         right = sto > x_unique[-1]
         if np.any(left):
@@ -861,14 +862,14 @@ class DMAResult:
         self,
         anode_ocp: Any,
         cathode_ocp: Any,
-        v_min: Optional[float] = None,
-        v_max: Optional[float] = None,
+        v_min: float | None = None,
+        v_max: float | None = None,
         on_out_of_range: str = "raise",
-        gamma_an: Optional[float] = None,
-        gamma_ca: Optional[float] = None,
+        gamma_an: float | None = None,
+        gamma_ca: float | None = None,
         allow_extrapolation: bool = False,
         n_points: int = 4001,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Voltage-anchor the export window using a supplied OCP voltage model.
 
@@ -998,7 +999,7 @@ class DMAResult:
         util_an = sto_an_high - sto_an_low
         util_ca = sto_ca_low - sto_ca_high
 
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "v_min": v_min,
             "v_max": v_max,
             "requested_v_min": requested_v_min,
@@ -1039,10 +1040,12 @@ class DMAResult:
         }
 
         if hasattr(anode_ocp, "get_component_stoichiometry_window"):
+            assert gamma_an is not None  # blend anode: _interp above would have raised
             out["anode_phase_window"] = anode_ocp.get_component_stoichiometry_window(
                 float(gamma_an), out["sto_window_an"]
             )
         if hasattr(cathode_ocp, "get_component_stoichiometry_window"):
+            assert gamma_ca is not None  # blend cathode: _interp above would have raised
             out["cathode_phase_window"] = cathode_ocp.get_component_stoichiometry_window(
                 float(gamma_ca), out["sto_window_ca"]
             )
@@ -1053,17 +1056,17 @@ class DMAResult:
         self,
         anode_blend: Any,
         cathode_ocp: Any,
-        c_max_blend: Optional[float] = None,
-        eps_total: Optional[float] = None,
-        eps_blend1: Optional[float] = None,
-        eps_blend2: Optional[float] = None,
-        v_min: Optional[float] = None,
-        v_max: Optional[float] = None,
+        c_max_blend: float | None = None,
+        eps_total: float | None = None,
+        eps_blend1: float | None = None,
+        eps_blend2: float | None = None,
+        v_min: float | None = None,
+        v_max: float | None = None,
         on_out_of_range: str = "raise",
-        gamma_an: Optional[float] = None,
+        gamma_an: float | None = None,
         allow_extrapolation: bool = False,
         n_points: int = 4001,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Export a voltage-anchored blend window as per-phase PyBaMM values.
 
@@ -1113,13 +1116,12 @@ class DMAResult:
                 "anode_blend must provide get_component_stoichiometry_window."
             )
 
-        have_cmax = c_max_blend is not None
         have_eps = (
             eps_total is not None
             and eps_blend1 is not None
             and eps_blend2 is not None
         )
-        if have_cmax:
+        if c_max_blend is not None:
             c_max_blend = float(c_max_blend)
             if c_max_blend <= 0:
                 raise ValueError(
@@ -1129,7 +1131,7 @@ class DMAResult:
             raise ValueError(
                 "eps_total, eps_blend1, and eps_blend2 must be supplied together."
             )
-        if have_eps:
+        if eps_total is not None and eps_blend1 is not None and eps_blend2 is not None:
             eps_total = float(eps_total)
             eps_blend1 = float(eps_blend1)
             eps_blend2 = float(eps_blend2)
@@ -1184,13 +1186,13 @@ class DMAResult:
         )
         blend_util = export["sto_window_an"][1] - export["sto_window_an"][0]
 
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "voltage_anchor": export,
             "phase_window": window,
             "post_processed_only": True,
             "fit_is_unchanged": True,
             "gamma_blend2": gamma_an,
-            "c_max_blend": float(c_max_blend) if have_cmax else None,
+            "c_max_blend": float(c_max_blend) if c_max_blend is not None else None,
             "eps_total": eps_total,
             "eps_blend1": eps_blend1,
             "eps_blend2": eps_blend2,
@@ -1213,7 +1215,7 @@ class DMAResult:
             "voltage_anode_100soc": float(window["voltage_100soc"]),
         }
 
-        if have_eps:
+        if eps_total is not None and eps_blend1 is not None and eps_blend2 is not None:
             c_max_blend1_per_blend = (
                 (1.0 - gamma_an) * eps_total
                 / (eps_blend1 * raw_blend_range)
@@ -1229,7 +1231,12 @@ class DMAResult:
                 }
             )
 
-        if have_cmax and have_eps:
+        if (
+            c_max_blend is not None
+            and eps_total is not None
+            and eps_blend1 is not None
+            and eps_blend2 is not None
+        ):
             c_max_blend1 = float(c_max_blend) * out["c_max_blend1_per_c_max_blend"]
             c_max_blend2 = float(c_max_blend) * out["c_max_blend2_per_c_max_blend"]
             phase_capacity_delta = (
@@ -1351,10 +1358,10 @@ class AgingStudyResults:
         Whether fitting was performed in reverse order.
     """
 
-    results: Dict[str, DMAResult] = field(default_factory=dict)
-    reference_data: Optional[ReferenceData] = None
-    cu_labels: List[str] = field(default_factory=list)
-    efc_values: List[float] = field(default_factory=list)
+    results: dict[str, DMAResult] = field(default_factory=dict)
+    reference_data: ReferenceData | None = None
+    cu_labels: list[str] = field(default_factory=list)
+    efc_values: list[float] = field(default_factory=list)
     is_cyclic: bool = True
     fit_reverse: bool = False
 
@@ -1371,11 +1378,11 @@ class AgingStudyResults:
         return iter(self.cu_labels)
 
     @property
-    def cycle_numbers(self) -> List[float]:
+    def cycle_numbers(self) -> list[float]:
         """Alias for efc_values (backwards compatibility)."""
         return self.efc_values
 
-    def add_result(self, result: DMAResult, efc: Optional[float] = None):
+    def add_result(self, result: DMAResult, efc: float | None = None):
         """
         Add a result to the study.
 
@@ -1500,7 +1507,8 @@ class AgingStudyResults:
         import pickle
 
         with open(filepath, "rb") as f:
-            return pickle.load(f)
+            loaded: "AgingStudyResults" = pickle.load(f)
+        return loaded
 
     def to_csv(self, filepath: str):
         """

@@ -22,6 +22,7 @@ from numpy.typing import NDArray
 import scipy.io
 
 from pydma.preprocessing.smoother import smooth_lowess
+from pydma.silicon.strict_sto import _collapse_plateaus, _pav_isotonic
 
 
 @dataclass
@@ -269,157 +270,6 @@ def _trim_and_renorm(
     return voltage, capacity
 
 
-def _pav_isotonic(
-    q_raw: NDArray[np.floating],
-    direction: str = 'nondecreasing',
-) -> NDArray[np.floating]:
-    """Isotonic regression via Pool Adjacent Violators (PAV).
-
-    Enforces monotonicity with minimal L2 change.
-
-    Parameters
-    ----------
-    q_raw : NDArray
-        Input capacity values.
-    direction : str
-        'nondecreasing' or 'nonincreasing'.
-
-    Returns
-    -------
-    NDArray
-        Monotone capacity values.
-    """
-    q = q_raw.copy()
-    if direction == 'nonincreasing':
-        q = -q
-    n = len(q)
-    val = np.zeros(n)
-    sz = np.zeros(n, dtype=int)
-    nb = 0
-    for i in range(n):
-        nb += 1
-        val[nb - 1] = q[i]
-        sz[nb - 1] = 1
-        while nb > 1 and val[nb - 2] > val[nb - 1]:
-            total = sz[nb - 2] + sz[nb - 1]
-            val[nb - 2] = (val[nb - 2] * sz[nb - 2] + val[nb - 1] * sz[nb - 1]) / total
-            sz[nb - 2] = total
-            nb -= 1
-    result = np.empty(n)
-    idx = 0
-    for k in range(nb):
-        result[idx:idx + sz[k]] = val[k]
-        idx += sz[k]
-    if direction == 'nonincreasing':
-        result = -result
-    return result
-
-
-def _collapse_plateaus(
-    voltage: NDArray[np.floating],
-    capacity: NDArray[np.floating],
-    eps: float | None = None,
-) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
-    """Replace plateaus in ``capacity`` (runs of equal values) with their two
-    voltage endpoints, shifted by ±eps so the result is strictly monotonic.
-
-    PAV (isotonic regression) pools violating points to a common mean, which
-    yields runs of identical capacity. The resulting (capacity, voltage)
-    relation is a function of voltage but not of capacity — multiple voltages
-    map to the same SOC. Downstream code that interpolates SOC -> voltage
-    needs a strictly monotone capacity axis.
-
-    For each run of length L >= 2 at value q:
-      - keep only the first and last index of the run (drop interior),
-      - set their capacity values to ``q - eps`` and ``q + eps`` (or reversed
-        for a non-increasing curve), clamped to the original [min, max] so
-        the output never extends past the input range.
-
-    Linear interpolation across the original plateau range is preserved within
-    eps, so voltage -> capacity consumers see essentially the same curve.
-
-    Parameters
-    ----------
-    voltage : NDArray
-        Voltage values, sorted with ``capacity``.
-    capacity : NDArray
-        Monotone (post-PAV) capacity values, possibly with plateaus.
-    eps : float, optional
-        Tie-breaking shift. If ``None``, chosen automatically as 1e-5 of the
-        capacity range. Robust under cubic-spline interpolation downstream
-        while still being numerically tiny.
-
-    Returns
-    -------
-    tuple[NDArray, NDArray]
-        Strictly monotone (voltage, capacity) with plateaus collapsed.
-    """
-    n = len(capacity)
-    if n < 2:
-        return voltage, capacity
-
-    direction = 1 if capacity[-1] >= capacity[0] else -1
-
-    q_min = float(capacity.min())
-    q_max = float(capacity.max())
-    q_range = q_max - q_min
-
-    if eps is None:
-        eps = q_range * 1e-5 if q_range > 0 else 1e-9
-    eps = max(float(eps), np.finfo(np.float64).eps)
-
-    # PAV-pooled means can drift in floating point so adjacent buckets that
-    # should have merged end up slightly violating monotonicity. Cumulative
-    # min/max snap forces (non-)monotonicity exactly so plateau detection
-    # below works on a clean signal.
-    q_arr = capacity.astype(np.float64)
-    q_clean = np.maximum.accumulate(q_arr) if direction > 0 else np.minimum.accumulate(q_arr)
-
-    # Mark interior of plateaus for removal
-    keep = np.ones(n, dtype=bool)
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and q_clean[j + 1] == q_clean[i]:
-            j += 1
-        if j > i + 1:
-            keep[i + 1:j] = False
-        i = j + 1
-
-    v_out = voltage[keep].copy()
-    q_out = q_clean[keep].astype(np.float64, copy=True)
-
-    # Break remaining adjacent ties by shifting endpoints in the monotone
-    # direction; clamp to the original range so the output never extends
-    # past [q_min, q_max].
-    m = len(q_out)
-    k = 0
-    while k < m - 1:
-        if q_out[k] == q_out[k + 1]:
-            q_out[k] = max(q_min, min(q_max, q_out[k] - direction * eps))
-            q_out[k + 1] = max(q_min, min(q_max, q_out[k + 1] + direction * eps))
-            k += 2
-        else:
-            k += 1
-
-    # Final enforcement: forward sweep adds a tiny correction wherever the
-    # shift step (combined with clamping at the boundary) left adjacent
-    # values weakly ordered. Guarantees strict monotonicity for downstream
-    # cubic-spline interpolators without re-arranging the curve shape.
-    min_step = max(eps * 0.1, np.finfo(np.float64).eps)
-    if direction > 0:
-        for k in range(1, m):
-            if q_out[k] <= q_out[k - 1]:
-                q_out[k] = q_out[k - 1] + min_step
-    else:
-        for k in range(1, m):
-            if q_out[k] >= q_out[k - 1]:
-                q_out[k] = q_out[k - 1] - min_step
-    q_out = np.clip(q_out, q_min, q_max)
-
-    return v_out, q_out
-
-
 def generate_si_curve(
     blend_path: str | Path | None = None,
     graphite_path: str | Path | None = None,
@@ -549,11 +399,14 @@ def generate_si_curve(
     blend_order = np.argsort(blend_v)
     blend_v, blend_q = blend_v[blend_order], blend_q[blend_order]
 
-    # Create common voltage grid (use actual data range after trimming)
-    v_lo = max(gr_v.min(), blend_v.min())
-    v_hi = min(gr_v.max(), blend_v.max())
+    # Create common voltage grid over the conceptual pre-trim overlap window.
+    # This mirrors MATLAB generate_si_ocp and avoids sampling-dependent endpoint
+    # shifts that arise from using the first/last surviving data points after
+    # _trim_and_renorm (those points are strictly inside [v_min, v_max] in
+    # general, which produces a slightly inset grid that depends on the input
+    # sampling rather than on the conceptual support boundary).
     n_points = max(len(gr_v), len(blend_v))
-    v_common = np.linspace(v_lo, v_hi, n_points)
+    v_common = np.linspace(v_min, v_max, n_points)
 
     # Interpolate to common grid
     q_gr = np.interp(v_common, gr_v, gr_q)

@@ -12,7 +12,9 @@ the evolutionary algorithm explore the complex, multi-modal parameter space.
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Callable, Any
+from typing import Any
+
+from collections.abc import Callable
 import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import differential_evolution, OptimizeResult
@@ -196,8 +198,9 @@ class DMAOptimizer:
         # Create callback wrapper if needed
         callback_wrapper = None
         if self.callback is not None:
+            user_callback = self.callback  # local binding for mypy narrowing
             def callback_wrapper(xk: NDArray, convergence: float) -> bool:
-                self.callback(xk, convergence)
+                user_callback(xk, convergence)
                 return False  # Don't stop early
 
         # Run differential evolution

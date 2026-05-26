@@ -8,7 +8,6 @@ This module provides functions for calculating battery degradation modes:
 """
 
 import numpy as np
-from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
 
@@ -184,7 +183,7 @@ def _safe_loss(init_val: float, current_val: float) -> float:
 def calculate_mse(
     measured: np.ndarray,
     calculated: np.ndarray,
-    mask: Optional[np.ndarray] = None,
+    mask: np.ndarray | None = None,
 ) -> float:
     """Masked mean squared error between two curves.
 
@@ -211,7 +210,7 @@ def calculate_mse(
 def calculate_capacity_metrics(
     params: np.ndarray,
     capa_actual: float,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Calculate capacity-related metrics from fitted parameters.
 
