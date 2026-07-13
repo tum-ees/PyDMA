@@ -800,7 +800,17 @@ def load_aging_study(
             if cu_path.is_dir():
                 # Look for pOCV file in directory
                 for pattern in _DIRECTION_PATTERNS[direction]:
-                    files = list(cu_path.glob(pattern))
+                    files = sorted(cu_path.glob(pattern))
+                    if direction == "charge":
+                        # "charge" is a substring of "discharge". Exclude
+                        # explicitly discharge-labelled files so selection does
+                        # not depend on filesystem iteration order.
+                        files = [
+                            file
+                            for file in files
+                            if "discharge" not in file.stem.lower()
+                            and "dch" not in file.stem.lower()
+                        ]
                     if files:
                         soc, voltage, capacity = load_pocv(files[0])
                         results[cu_name] = (soc, voltage, capacity)
