@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Updated type annotations for current NumPy and Matplotlib typing without
   changing runtime behavior.
 
+### Fixed
+
+* Fixed platform-dependent charge/discharge CSV selection in aging-study
+  directories.
+
 ## [1.1.0] - 2026-05-23
 
 ### Changed
