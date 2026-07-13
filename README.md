@@ -9,6 +9,11 @@
   <img src="https://img.shields.io/pypi/v/pydma.svg" alt="PyPI">
 </a>
 
+<!-- permanent software archive -->
+<a href="https://doi.org/10.5281/zenodo.21346639">
+  <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.21346639.svg" alt="Zenodo DOI">
+</a>
+
 <!-- environment and language -->
 <a href="https://www.python.org/">
   <img src="https://img.shields.io/badge/Platform-Python-blue.svg" alt="Python">
