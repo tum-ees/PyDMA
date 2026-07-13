@@ -31,53 +31,29 @@ from pydma._version import __version__
 __author__ = "TUM-EES"
 __email__ = "mathias.rehm@tum.de"
 
-# Core classes
-from pydma.core.analyzer import DMAAnalyzer
-from pydma.core.optimizer import DMAOptimizer
-from pydma.utils.dma_config import DMAConfig
-from pydma.utils.results import (
-    DMAResult,
-    AgingStudyResults,
-    DegradationModes,
-    FittedParams,
-    ReferenceData,
-)
-
-# Electrode classes
-from pydma.electrodes.electrode import ElectrodeOCP
-from pydma.electrodes.blend import BlendElectrode
-from pydma.electrodes.inhomogeneity import calculate_inhomogeneity
-
-# Data loading
-from pydma.preprocessing.loader import load_ocp, load_pocv, load_aging_study, auto_detect_columns
-
-# Preprocessing
-from pydma.preprocessing.smoother import (
-    smooth_lowess,
-    smooth_savgol,
-    apply_filter,
-)
+from pydma.analysis.degradation import calculate_degradation_modes
 
 # Analysis functions
 from pydma.analysis.dva import calculate_dva
 from pydma.analysis.ica import calculate_ica
-from pydma.analysis.degradation import calculate_degradation_modes
-from pydma.utils.roi import build_roi_mask
 
-# Visualization
-from pydma.visualization.plots import (
-    plot_ocv_model_param_show,
-    plot_dma_result,
-    plot_degradation_modes,
-    plot_ocv_comparison,
-    plot_dva_comparison,
-    plot_ica_comparison,
-    plot_aging_study,
-    DMAPlotter,
-)
+# Core classes
+from pydma.core.analyzer import DMAAnalyzer
+from pydma.core.optimizer import DMAOptimizer
+from pydma.electrodes.blend import BlendElectrode
+
+# Electrode classes
+from pydma.electrodes.electrode import ElectrodeOCP
+from pydma.electrodes.inhomogeneity import calculate_inhomogeneity
+
+# Data loading
+from pydma.preprocessing.loader import auto_detect_columns, load_aging_study, load_ocp, load_pocv
+
+# Preprocessing
+from pydma.preprocessing.smoother import apply_filter, smooth_lowess, smooth_savgol
 
 # Silicon curve generation
-from pydma.silicon.generator import generate_si_curve, SiliconCurveParams
+from pydma.silicon.generator import SiliconCurveParams, generate_si_curve
 
 # Electrode balancing export (PyDMA fit + cell geometry -> c_max / c_init).
 # Simulator-agnostic; ElectrodeBalancing.pybamm_overrides() is the only
@@ -87,6 +63,27 @@ from pydma.utils.balancing import (
     ElectrodeBalancing,
     derive_balancing,
     derive_balancing_from_result,
+)
+from pydma.utils.dma_config import DMAConfig
+from pydma.utils.results import (
+    AgingStudyResults,
+    DegradationModes,
+    DMAResult,
+    FittedParams,
+    ReferenceData,
+)
+from pydma.utils.roi import build_roi_mask
+
+# Visualization
+from pydma.visualization.plots import (
+    DMAPlotter,
+    plot_aging_study,
+    plot_degradation_modes,
+    plot_dma_result,
+    plot_dva_comparison,
+    plot_ica_comparison,
+    plot_ocv_comparison,
+    plot_ocv_model_param_show,
 )
 
 __all__ = [

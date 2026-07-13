@@ -6,6 +6,7 @@ from OCV data.
 """
 
 import numpy as np
+
 from pydma.preprocessing.smoother import apply_filter
 
 
@@ -15,7 +16,7 @@ def calculate_dva(
     n_points: int | None = None,
     smooth: bool = True,
     smooth_window: int = 30,
- ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Calculate Differential Voltage Analysis (DVA) curve.
 

@@ -7,6 +7,7 @@ including single-CU results and multi-CU aging study results.
 
 from dataclasses import dataclass, field
 from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -256,9 +257,7 @@ class FittedParams:
         if gamma is None:
             raise ValueError("gamma_blend2_an is not set for this fit")
         if not hasattr(blend_electrode, "get_component_stoichiometry_window"):
-            raise TypeError(
-                "blend_electrode must provide get_component_stoichiometry_window"
-            )
+            raise TypeError("blend_electrode must provide get_component_stoichiometry_window")
         # Keep sto_window_an unchanged; this explicit helper returns phase windows.
         result: dict[str, Any] = blend_electrode.get_component_stoichiometry_window(
             float(gamma), self.sto_window_an
@@ -328,16 +327,13 @@ class FittedParams:
             or the implied window shrink factor is non-positive.
         """
         soc = np.asarray(soc_recon, dtype=float)
-        v   = np.asarray(v_recon,   dtype=float)
+        v = np.asarray(v_recon, dtype=float)
         if soc.size == 0 or v.size == 0:
             raise ValueError(
-                "with_voltage_anchored_windows() needs non-empty soc_recon "
-                "and v_recon arrays."
+                "with_voltage_anchored_windows() needs non-empty soc_recon " "and v_recon arrays."
             )
         if soc.shape != v.shape:
-            raise ValueError(
-                f"soc_recon shape {soc.shape} does not match v_recon shape {v.shape}."
-            )
+            raise ValueError(f"soc_recon shape {soc.shape} does not match v_recon shape {v.shape}.")
 
         order = np.argsort(v)
         v_sorted = v[order]
@@ -350,7 +346,7 @@ class FittedParams:
                 "anchoring would require extrapolation."
             )
 
-        s_low  = float(np.interp(v_min, v_sorted, soc_sorted))
+        s_low = float(np.interp(v_min, v_sorted, soc_sorted))
         s_high = float(np.interp(v_max, v_sorted, soc_sorted))
         delta_s = s_high - s_low
         if delta_s <= 0:
@@ -708,7 +704,7 @@ class DMAResult:
             would extrapolate.
         """
         soc = np.asarray(self.soc_reconstructed, dtype=float)
-        v   = np.asarray(self.ocv_reconstructed, dtype=float)
+        v = np.asarray(self.ocv_reconstructed, dtype=float)
         if soc.size == 0 or v.size == 0:
             raise ValueError(
                 "voltage_anchored_windows() requires soc_reconstructed and "
@@ -736,8 +732,7 @@ class DMAResult:
         requested_v_max = float(v_max)
         if on_out_of_range not in {"raise", "clip"}:
             raise ValueError(
-                "on_out_of_range must be either 'raise' or 'clip', "
-                f"got {on_out_of_range!r}."
+                "on_out_of_range must be either 'raise' or 'clip', " f"got {on_out_of_range!r}."
             )
         if requested_v_min > requested_v_max:
             raise ValueError(
@@ -764,17 +759,17 @@ class DMAResult:
                 f"OCV range [{v_lo:.4f}, {v_hi:.4f}] V."
             )
 
-        soc_low  = float(np.interp(v_min, v_sorted, soc_sorted))
+        soc_low = float(np.interp(v_min, v_sorted, soc_sorted))
         soc_high = float(np.interp(v_max, v_sorted, soc_sorted))
 
         p = self.fitted_params
-        sto_an_low  = p.sto_init_an + soc_low  * p.utilization_an
+        sto_an_low = p.sto_init_an + soc_low * p.utilization_an
         sto_an_high = p.sto_init_an + soc_high * p.utilization_an
-        sto_ca_low  = p.sto_init_ca - soc_low  * p.utilization_ca
+        sto_ca_low = p.sto_init_ca - soc_low * p.utilization_ca
         sto_ca_high = p.sto_init_ca - soc_high * p.utilization_ca
 
         util_an = sto_an_high - sto_an_low
-        util_ca = sto_ca_low  - sto_ca_high
+        util_ca = sto_ca_low - sto_ca_high
 
         return {
             "v_min": v_min,
@@ -914,8 +909,7 @@ class DMAResult:
         """
         if on_out_of_range not in {"raise", "clip"}:
             raise ValueError(
-                "on_out_of_range must be either 'raise' or 'clip', "
-                f"got {on_out_of_range!r}."
+                "on_out_of_range must be either 'raise' or 'clip', " f"got {on_out_of_range!r}."
             )
         if n_points < 2:
             raise ValueError("n_points must be at least 2.")
@@ -1112,40 +1106,27 @@ class DMAResult:
             capacity consistency check. The raw fit is not modified.
         """
         if not hasattr(anode_blend, "get_component_stoichiometry_window"):
-            raise TypeError(
-                "anode_blend must provide get_component_stoichiometry_window."
-            )
+            raise TypeError("anode_blend must provide get_component_stoichiometry_window.")
 
-        have_eps = (
-            eps_total is not None
-            and eps_blend1 is not None
-            and eps_blend2 is not None
-        )
+        have_eps = eps_total is not None and eps_blend1 is not None and eps_blend2 is not None
         if c_max_blend is not None:
             c_max_blend = float(c_max_blend)
             if c_max_blend <= 0:
-                raise ValueError(
-                    f"c_max_blend must be positive, got {c_max_blend}."
-                )
+                raise ValueError(f"c_max_blend must be positive, got {c_max_blend}.")
         if any(v is not None for v in (eps_total, eps_blend1, eps_blend2)) and not have_eps:
-            raise ValueError(
-                "eps_total, eps_blend1, and eps_blend2 must be supplied together."
-            )
+            raise ValueError("eps_total, eps_blend1, and eps_blend2 must be supplied together.")
         if eps_total is not None and eps_blend1 is not None and eps_blend2 is not None:
             eps_total = float(eps_total)
             eps_blend1 = float(eps_blend1)
             eps_blend2 = float(eps_blend2)
             if eps_total <= 0 or eps_blend1 <= 0 or eps_blend2 <= 0:
-                raise ValueError(
-                    "eps_total, eps_blend1, and eps_blend2 must all be positive."
-                )
+                raise ValueError("eps_total, eps_blend1, and eps_blend2 must all be positive.")
 
         if gamma_an is None:
             gamma_an = self.fitted_params.gamma_blend2_an
         if gamma_an is None:
             raise ValueError(
-                "gamma_an was not provided and fitted_params.gamma_blend2_an "
-                "is not set."
+                "gamma_an was not provided and fitted_params.gamma_blend2_an " "is not set."
             )
         gamma_an = float(gamma_an)
         if gamma_an < 0 or gamma_an > 1:
@@ -1169,9 +1150,7 @@ class DMAResult:
         raw_blend_max = float(window["raw_blend_max"])
         raw_blend_range = raw_blend_max - raw_blend_min
         if raw_blend_range <= 0:
-            raise ValueError(
-                f"Blend raw capacity range must be positive, got {raw_blend_range}."
-            )
+            raise ValueError(f"Blend raw capacity range must be positive, got {raw_blend_range}.")
 
         sto1_low = float(window["blend1_sto_0soc"])
         sto1_high = float(window["blend1_sto_100soc"])
@@ -1180,9 +1159,8 @@ class DMAResult:
 
         util1 = sto1_high - sto1_low
         util2 = sto2_high - sto2_low
-        raw_delta = (
-            float(window["raw_blend_capacity_100soc"])
-            - float(window["raw_blend_capacity_0soc"])
+        raw_delta = float(window["raw_blend_capacity_100soc"]) - float(
+            window["raw_blend_capacity_0soc"]
         )
         blend_util = export["sto_window_an"][1] - export["sto_window_an"][0]
 
@@ -1216,14 +1194,8 @@ class DMAResult:
         }
 
         if eps_total is not None and eps_blend1 is not None and eps_blend2 is not None:
-            c_max_blend1_per_blend = (
-                (1.0 - gamma_an) * eps_total
-                / (eps_blend1 * raw_blend_range)
-            )
-            c_max_blend2_per_blend = (
-                gamma_an * eps_total
-                / (eps_blend2 * raw_blend_range)
-            )
+            c_max_blend1_per_blend = (1.0 - gamma_an) * eps_total / (eps_blend1 * raw_blend_range)
+            c_max_blend2_per_blend = gamma_an * eps_total / (eps_blend2 * raw_blend_range)
             out.update(
                 {
                     "c_max_blend1_per_c_max_blend": c_max_blend1_per_blend,
@@ -1240,8 +1212,7 @@ class DMAResult:
             c_max_blend1 = float(c_max_blend) * out["c_max_blend1_per_c_max_blend"]
             c_max_blend2 = float(c_max_blend) * out["c_max_blend2_per_c_max_blend"]
             phase_capacity_delta = (
-                eps_blend1 * c_max_blend1 * util1
-                + eps_blend2 * c_max_blend2 * util2
+                eps_blend1 * c_max_blend1 * util1 + eps_blend2 * c_max_blend2 * util2
             )
             target_capacity_delta = eps_total * float(c_max_blend) * blend_util
             capacity_ratio = (

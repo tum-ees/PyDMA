@@ -32,42 +32,41 @@ Example
 >>> print(f"LLI: {result.degradation_modes.lli:.2%}")
 """
 
+import warnings
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
-from collections.abc import Callable
-from functools import partial
-import warnings
 import numpy as np
 from numpy.typing import NDArray
 
-from pydma.utils.dma_config import DMAConfig
-from pydma.utils.results import (
-    DMAResult,
-    AgingStudyResults,
-    FittedParams,
-    DegradationModes,
-    ReferenceData,
-)
-from pydma.electrodes.electrode import ElectrodeOCP
-from pydma.electrodes.blend import BlendElectrode
+from pydma.analysis.degradation import calculate_degradation_modes, calculate_mse
 from pydma.analysis.dva import calculate_dva, precompute_dva
 from pydma.analysis.ica import calculate_ica, precompute_ica
-from pydma.analysis.degradation import calculate_degradation_modes, calculate_mse
-from pydma.utils.roi import build_roi_mask
+from pydma.core.objectives import PenaltyConfig, PreviousLAM
+from pydma.core.objectives import ReferenceData as ObjectiveRefData
 from pydma.core.objectives import (
+    _interp1_linear_fill0,
     combined_objective,
-    objective_with_penalty,
-    fit_ocv,
     fit_dva,
     fit_ica,
-    PreviousLAM,
-    ReferenceData as ObjectiveRefData,
-    PenaltyConfig,
-    _interp1_linear_fill0,
+    fit_ocv,
+    objective_with_penalty,
 )
 from pydma.core.optimizer import DMAOptimizer, MultiRunResult
+from pydma.electrodes.blend import BlendElectrode
+from pydma.electrodes.electrode import ElectrodeOCP
 from pydma.preprocessing.loader import load_aging_study as load_aging_study_data
+from pydma.utils.dma_config import DMAConfig
+from pydma.utils.results import (
+    AgingStudyResults,
+    DegradationModes,
+    DMAResult,
+    FittedParams,
+    ReferenceData,
+)
+from pydma.utils.roi import build_roi_mask
 
 
 class DMAAnalyzer:
@@ -244,9 +243,7 @@ class DMAAnalyzer:
     ) -> None:
         """Validate that all required inputs are set."""
         if self.anode is None:
-            raise ValueError(
-                "Anode electrode not set. Use set_anode() or pass anode to analyze()."
-            )
+            raise ValueError("Anode electrode not set. Use set_anode() or pass anode to analyze().")
         if self.cathode is None:
             raise ValueError(
                 "Cathode electrode not set. Use set_cathode() or pass cathode to analyze()."
@@ -259,9 +256,7 @@ class DMAAnalyzer:
                 f"Got {len(measured_capacity)} and {len(measured_voltage)}."
             )
         if len(measured_capacity) < 10:
-            raise ValueError(
-                f"Need at least 10 data points. Got {len(measured_capacity)}."
-            )
+            raise ValueError(f"Need at least 10 data points. Got {len(measured_capacity)}.")
 
     def _prepare_electrode(
         self,
@@ -353,6 +348,7 @@ class DMAAnalyzer:
 
         # Smooth voltage (LOWESS) using index-based smoothing (MATLAB smooth)
         from pydma.preprocessing.smoother import apply_filter
+
         voltage = apply_filter(
             voltage,
             method="lowess",
@@ -401,6 +397,7 @@ class DMAAnalyzer:
 
         # For blend components, keep SOC points (no resampling)
         from pydma.preprocessing.smoother import apply_filter
+
         voltage = apply_filter(
             voltage,
             method="lowess",
@@ -527,6 +524,7 @@ class DMAAnalyzer:
 
         # Apply LOWESS smoothing to raw voltage (MATLAB-compatible)
         from pydma.preprocessing.smoother import apply_filter
+
         meas_voltage = apply_filter(
             meas_voltage,
             method=self.config.filter_type or "sgolay",
@@ -640,9 +638,7 @@ class DMAAnalyzer:
                     anode_is_blend if anode_is_blend is not None else self.anode_is_blend
                 ),
                 cathode_is_blend=(
-                    cathode_is_blend
-                    if cathode_is_blend is not None
-                    else self.cathode_is_blend
+                    cathode_is_blend if cathode_is_blend is not None else self.cathode_is_blend
                 ),
                 inhom_anode_offset=self.config.inhom_anode_offset,
                 inhom_cathode_offset=self.config.inhom_cathode_offset,
@@ -673,9 +669,7 @@ class DMAAnalyzer:
                     anode_is_blend if anode_is_blend is not None else self.anode_is_blend
                 ),
                 cathode_is_blend=(
-                    cathode_is_blend
-                    if cathode_is_blend is not None
-                    else self.cathode_is_blend
+                    cathode_is_blend if cathode_is_blend is not None else self.cathode_is_blend
                 ),
                 inhom_anode_offset=self.config.inhom_anode_offset,
                 inhom_cathode_offset=self.config.inhom_cathode_offset,
@@ -815,7 +809,13 @@ class DMAAnalyzer:
 
         # Create objective function (with penalty constraints if not first CU)
         objective = self._create_objective(
-            q, meas_voltage, meas_dva, meas_ica, dva_roi_mask, ica_roi_mask, q0,
+            q,
+            meas_voltage,
+            meas_dva,
+            meas_ica,
+            dva_roi_mask,
+            ica_roi_mask,
+            q0,
             actual_capacity=effective_capacity,
             anode=anode,
             cathode=cathode,
@@ -1024,7 +1024,7 @@ class DMAAnalyzer:
         # Calculate RMSE values matching MATLAB (calculate_RMSE.m)
         # Compute reconstructed OCV for RMSE calculation
         sim_curves = self.compute_simulated_curves(fitted_params, n_points=len(q))
-        reconstructed_voltage = np.interp(q, sim_curves['capacity'], sim_curves['voltage'])
+        reconstructed_voltage = np.interp(q, sim_curves["capacity"], sim_curves["voltage"])
 
         # Note: voltage anchoring (mapping the fitted SOC = [0, 1] window to
         # the input pOCV's V_min / V_max) is not done here in the analyzer.
@@ -1045,7 +1045,7 @@ class DMAAnalyzer:
 
         # DVA RMSE over full range (both sides use calculate_dva-style,
         # no Q0, so the comparison is on consistent scales)
-        reconstructed_dva_on_q = np.interp(q, sim_curves['capacity'], sim_curves['dva'])
+        reconstructed_dva_on_q = np.interp(q, sim_curves["capacity"], sim_curves["dva"])
         rmse_dva = np.sqrt(calculate_mse(display_dva_measured, reconstructed_dva_on_q))
         is_accepted = opt_result.best_is_accepted and (
             opt_result.best_rmse < self.config.rmse_threshold
@@ -1075,18 +1075,18 @@ class DMAAnalyzer:
             measured_ica=display_ica_measured,
             dva_q_measured=q,
             dva_measured=display_dva_measured,
-            dva_q_reconstructed=sim_curves['capacity'],
-            dva_reconstructed=sim_curves['dva'],
+            dva_q_reconstructed=sim_curves["capacity"],
+            dva_reconstructed=sim_curves["dva"],
             ica_q_measured=q,
             ica_measured=display_ica_measured,
-            ica_q_reconstructed=sim_curves['capacity'],
-            ica_reconstructed=sim_curves['ica'],
-            soc_reconstructed=sim_curves['capacity'],
-            ocv_reconstructed=sim_curves['voltage'],
-            anode_soc=sim_curves['anode_soc'],
-            anode_potential=sim_curves['anode_voltage'],
-            cathode_soc=sim_curves['cathode_soc'],
-            cathode_potential=sim_curves['cathode_voltage'],
+            ica_q_reconstructed=sim_curves["capacity"],
+            ica_reconstructed=sim_curves["ica"],
+            soc_reconstructed=sim_curves["capacity"],
+            ocv_reconstructed=sim_curves["voltage"],
+            anode_soc=sim_curves["anode_soc"],
+            anode_potential=sim_curves["anode_voltage"],
+            cathode_soc=sim_curves["cathode_soc"],
+            cathode_potential=sim_curves["cathode_voltage"],
             capacity=actual_capacity,
             is_accepted=is_accepted,
             status=status,
@@ -1107,10 +1107,7 @@ class DMAAnalyzer:
         pocv_data: (
             dict[
                 str,
-                (
-                    tuple[NDArray, NDArray] |
-                    tuple[NDArray, NDArray, float | None]
-                ),
+                (tuple[NDArray, NDArray] | tuple[NDArray, NDArray, float | None]),
             ]
             | str
             | Path
@@ -1334,9 +1331,7 @@ class DMAAnalyzer:
         # measured [0,1] grid.
         recon_soc = np.linspace(0.0, 1.0, n_points)
         anode_v_recon = _interp1_linear_fill0(anode_soc, anode_v, recon_soc)
-        cathode_v_recon = _interp1_linear_fill0(
-            cathode_soc, cathode_v, recon_soc
-        )
+        cathode_v_recon = _interp1_linear_fill0(cathode_soc, cathode_v, recon_soc)
         fc_voltage = cathode_v_recon - anode_v_recon
 
         # DVA and ICA from reconstructed full-cell
@@ -1345,15 +1340,15 @@ class DMAAnalyzer:
         _, _, ica = calculate_ica(recon_soc, fc_voltage)
 
         return {
-            'soc': recon_soc,
-            'voltage': fc_voltage,
-            'capacity': recon_soc,
-            'dva': dva,
-            'ica': ica,
-            'anode_soc': anode_soc,
-            'anode_voltage': anode_v,
-            'cathode_soc': cathode_soc,
-            'cathode_voltage': cathode_v,
+            "soc": recon_soc,
+            "voltage": fc_voltage,
+            "capacity": recon_soc,
+            "dva": dva,
+            "ica": ica,
+            "anode_soc": anode_soc,
+            "anode_voltage": anode_v,
+            "cathode_soc": cathode_soc,
+            "cathode_voltage": cathode_v,
         }
 
     def compare_with_reference(

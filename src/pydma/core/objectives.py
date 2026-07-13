@@ -11,20 +11,21 @@ The objective functions compare simulated half-cell curves (transformed to full-
 against measured full-cell data using MSE within a region of interest (ROI).
 """
 
-import numpy as np
-from numpy.typing import NDArray
 from dataclasses import dataclass
 
-from pydma.electrodes.electrode import ElectrodeOCP
-from pydma.electrodes.blend import BlendElectrode
-from pydma.electrodes.inhomogeneity import calculate_inhomogeneity
+import numpy as np
+from numpy.typing import NDArray
+
 from pydma.analysis.degradation import calculate_mse
+from pydma.electrodes.blend import BlendElectrode
+from pydma.electrodes.electrode import ElectrodeOCP
+from pydma.electrodes.inhomogeneity import calculate_inhomogeneity
 from pydma.preprocessing.smoother import apply_filter
 from pydma.utils.roi import ROISpec, build_roi_mask
 
-
 # Penalty scale factor (matches MATLAB's scale = 1e8)
 PENALTY_SCALE = 1e8
+
 
 @dataclass
 class PreviousLAM:
@@ -33,6 +34,7 @@ class PreviousLAM:
     MATLAB Reference: objectiveWithPenalty in dma_core.m uses LAM_prev* variables
     to penalize physically implausible degradation between consecutive CUs.
     """
+
     lam_anode: float | None = None
     lam_cathode: float | None = None
     lam_anode_blend1: float | None = None
@@ -45,6 +47,7 @@ class ReferenceData:
 
     Contains initial capacities from the first CU (reference state).
     """
+
     capa_actual: float
     capa_anode_init: float
     capa_cathode_init: float
@@ -61,6 +64,7 @@ class PenaltyConfig:
     - aAnodeLoss, aCathodeLoss, etc. (max gain, i.e., max capacity regeneration)
     - limitPositiveAnodeLoss, etc. (max loss per CU)
     """
+
     max_anode_gain: float = 0.01
     max_cathode_gain: float = 0.01
     max_anode_blend1_gain: float = 0.005
@@ -690,12 +694,15 @@ def combined_objective(
     # OCV contribution
     if w_ocv > 0:
         ocv_error = fit_ocv(
-            params, anode, cathode,
+            params,
+            anode,
+            cathode,
             meas_voltage,
             q,
             roi_ocv_min,
             roi_ocv_max,
-            anode_is_blend, cathode_is_blend,
+            anode_is_blend,
+            cathode_is_blend,
             inhom_anode_offset,
             inhom_cathode_offset,
             inhom_points,
@@ -705,12 +712,15 @@ def combined_objective(
     # DVA contribution
     if w_dva > 0:
         dva_error = fit_dva(
-            params, anode, cathode,
+            params,
+            anode,
+            cathode,
             meas_dva,
             q,
             dva_roi_mask,
             q0,
-            anode_is_blend, cathode_is_blend,
+            anode_is_blend,
+            cathode_is_blend,
             inhom_anode_offset,
             inhom_cathode_offset,
             inhom_points,
@@ -720,12 +730,15 @@ def combined_objective(
     # ICA contribution
     if w_ica > 0:
         ica_error = fit_ica(
-            params, anode, cathode,
+            params,
+            anode,
+            cathode,
             meas_ica,
             q,
             ica_roi_mask,
             q0,
-            anode_is_blend, cathode_is_blend,
+            anode_is_blend,
+            cathode_is_blend,
             inhom_anode_offset,
             inhom_cathode_offset,
             inhom_points,
@@ -788,7 +801,7 @@ def calculate_penalty(
     params = np.asarray(params).flatten()
     if len(params) < 8:
         full_params = np.zeros(8)
-        full_params[:len(params)] = params
+        full_params[: len(params)] = params
         params = full_params
 
     # Enforce zero blend fraction if blend not used
@@ -950,13 +963,25 @@ def objective_with_penalty(
     """
     # Compute base objective
     base_cost = combined_objective(
-        params, anode, cathode,
-        meas_voltage, meas_dva, meas_ica,
-        q, dva_roi_mask, ica_roi_mask,
-        roi_ocv_min, roi_ocv_max, q0,
-        w_ocv, w_dva, w_ica,
-        anode_is_blend, cathode_is_blend,
-        inhom_anode_offset, inhom_cathode_offset,
+        params,
+        anode,
+        cathode,
+        meas_voltage,
+        meas_dva,
+        meas_ica,
+        q,
+        dva_roi_mask,
+        ica_roi_mask,
+        roi_ocv_min,
+        roi_ocv_max,
+        q0,
+        w_ocv,
+        w_dva,
+        w_ica,
+        anode_is_blend,
+        cathode_is_blend,
+        inhom_anode_offset,
+        inhom_cathode_offset,
         inhom_points,
     )
 
@@ -965,14 +990,12 @@ def objective_with_penalty(
     if ref_data is not None and prev_lam is not None and penalty_config is not None:
         # Check if we have any previous LAM values (not first CU)
         has_prev = (
-            prev_lam.lam_anode is not None or
-            prev_lam.lam_cathode is not None or
-            prev_lam.lam_anode_blend1 is not None or
-            prev_lam.lam_anode_blend2 is not None
+            prev_lam.lam_anode is not None
+            or prev_lam.lam_cathode is not None
+            or prev_lam.lam_anode_blend1 is not None
+            or prev_lam.lam_anode_blend2 is not None
         )
         if has_prev:
-            penalty = calculate_penalty(
-                params, ref_data, prev_lam, penalty_config, fit_reverse
-            )
+            penalty = calculate_penalty(params, ref_data, prev_lam, penalty_config, fit_reverse)
 
     return base_cost + penalty

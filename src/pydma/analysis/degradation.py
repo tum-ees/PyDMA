@@ -7,13 +7,15 @@ This module provides functions for calculating battery degradation modes:
 - LAM_ca: Loss of Active Material at Cathode
 """
 
-import numpy as np
 from dataclasses import dataclass
+
+import numpy as np
 
 
 @dataclass
 class DegradationResult:
     """Container for degradation calculation results."""
+
     lam_anode: float
     lam_cathode: float
     lli: float
@@ -89,7 +91,7 @@ def calculate_degradation_modes(
     # Ensure 8 elements (pad with zeros if needed)
     if len(params) < 8:
         full_params = np.zeros(8)
-        full_params[:len(params)] = params
+        full_params[: len(params)] = params
         params = full_params
 
     alpha_anode = params[0]
@@ -235,7 +237,7 @@ def calculate_capacity_metrics(
 
     if len(params) < 8:
         full_params = np.zeros(8)
-        full_params[:len(params)] = params
+        full_params[: len(params)] = params
         params = full_params
 
     alpha_anode = params[0]

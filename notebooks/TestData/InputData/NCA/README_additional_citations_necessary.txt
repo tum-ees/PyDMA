@@ -1,7 +1,7 @@
-Dear user of this tool. 
+Dear user of this tool.
 The above shown NCA curves have been measured within the frame
 of an aging study to investigate the aging behaviour of silicon-
-graphite. The study will will be published within 2026.
+graphite. The study will be published within 2026.
 It is thus sufficient to cite the paper which was published alongside
 with this tool. Feel free to search for the paper of the aging study as well.
 

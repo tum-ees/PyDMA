@@ -1,13 +1,12 @@
-from pathlib import Path
+import itertools
 import sys
 import tempfile
-import itertools
-from unittest.mock import patch
 import warnings
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from scipy.io import savemat
-
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -41,10 +40,7 @@ def test_load_pocv_returns_none_for_normalized_soc_without_capacity_column():
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "cu1.csv"
         path.write_text(
-            "SOC,U\n"
-            "0.0,3.0\n"
-            "0.5,3.5\n"
-            "1.0,4.0\n",
+            "SOC,U\n" "0.0,3.0\n" "0.5,3.5\n" "1.0,4.0\n",
             encoding="utf-8",
         )
 

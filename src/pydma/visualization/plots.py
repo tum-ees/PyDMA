@@ -16,34 +16,34 @@ Conventions used in this module:
   notebook and script users get consistent publication-style output.
 """
 
-from collections.abc import Sequence
 import re
 import warnings
-from typing import Any
-import numpy as np
-from numpy.typing import NDArray
+from collections.abc import MutableMapping, Sequence
+from typing import Any, cast
+
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
+import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from numpy.typing import NDArray
 
 from pydma.analysis.dva import calculate_dva
-from pydma.utils.results import DMAResult, DegradationModes, AgingStudyResults
-
+from pydma.utils.results import AgingStudyResults, DegradationModes, DMAResult
 
 # TUM colors (from TUM_colors.m)
 TUM_COLORS = {
-    'blue': np.array([48, 112, 179]) / 255,      # #3070B3 - TUM main blue (tumBlue)
-    'blue_dark': np.array([7, 33, 64]) / 255,    # #072140 - tumBlueDark
-    'dark_blue': np.array([0, 82, 147]) / 255,   # #005293
-    'light_blue': np.array([100, 160, 200]) / 255,  # #64A0C8
-    'lighter_blue': np.array([152, 198, 234]) / 255,  # #98C6EA
-    'orange': np.array([227, 114, 34]) / 255,    # #E37222
-    'green': np.array([162, 173, 0]) / 255,      # #A2AD00
-    'black': np.array([0, 0, 0]) / 255,
-    'gray': np.array([153, 153, 153]) / 255,     # #999999
-    'medium_gray': np.array([106, 117, 126]) / 255,  # #6A757E
-    'dark_gray': np.array([71, 80, 88]) / 255,   # #475058
-    'light_gray': np.array([218, 215, 203]) / 255,   # #DAD7CB
+    "blue": np.array([48, 112, 179]) / 255,  # #3070B3 - TUM main blue (tumBlue)
+    "blue_dark": np.array([7, 33, 64]) / 255,  # #072140 - tumBlueDark
+    "dark_blue": np.array([0, 82, 147]) / 255,  # #005293
+    "light_blue": np.array([100, 160, 200]) / 255,  # #64A0C8
+    "lighter_blue": np.array([152, 198, 234]) / 255,  # #98C6EA
+    "orange": np.array([227, 114, 34]) / 255,  # #E37222
+    "green": np.array([162, 173, 0]) / 255,  # #A2AD00
+    "black": np.array([0, 0, 0]) / 255,
+    "gray": np.array([153, 153, 153]) / 255,  # #999999
+    "medium_gray": np.array([106, 117, 126]) / 255,  # #6A757E
+    "dark_gray": np.array([71, 80, 88]) / 255,  # #475058
+    "light_gray": np.array([218, 215, 203]) / 255,  # #DAD7CB
 }
 
 
@@ -60,34 +60,35 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> None:
         Requires a working TeX installation in the runtime environment.
     """
     style: dict[str, Any] = {
-        'font.size': 10,
-        'axes.labelsize': 11,
-        'axes.titlesize': 12,
-        'legend.fontsize': 9,
-        'xtick.labelsize': 9,
-        'ytick.labelsize': 9,
-        'lines.linewidth': 1.5,
-        'axes.grid': True,
-        'grid.alpha': 0.3,
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "lines.linewidth": 1.5,
+        "axes.grid": True,
+        "grid.alpha": 0.3,
     }
     if latex_fonts:
         style.update(
             {
-                'font.family': 'serif',
-                'font.serif': [
-                    'Computer Modern Roman',
-                    'CMU Serif',
-                    'Times New Roman',
-                    'DejaVu Serif',
+                "font.family": "serif",
+                "font.serif": [
+                    "Computer Modern Roman",
+                    "CMU Serif",
+                    "Times New Roman",
+                    "DejaVu Serif",
                 ],
-                'mathtext.fontset': 'cm',
+                "mathtext.fontset": "cm",
                 # Keep math symbols italic (U, Q, C, etc.); use \mathrm{...}
                 # in labels for upright text/units where needed.
-                'mathtext.default': 'it',
+                "mathtext.default": "it",
             }
         )
-    style['text.usetex'] = bool(use_tex)
-    plt.rcParams.update(style)
+    style["text.usetex"] = bool(use_tex)
+    rc_params = cast(MutableMapping[str, Any], plt.rcParams)
+    rc_params.update(style)
 
 
 def _first_nonempty_array(
@@ -258,8 +259,7 @@ def plot_ocv_model_param_show(
 
     if measured_q.size == 0 or measured_u.size == 0:
         raise ValueError(
-            "Measured OCV arrays are missing. "
-            "Expected capacity/SOC and voltage in DMAResult."
+            "Measured OCV arrays are missing. " "Expected capacity/SOC and voltage in DMAResult."
         )
     if reconstructed_q.size == 0 or reconstructed_u.size == 0:
         raise ValueError(
@@ -268,8 +268,7 @@ def plot_ocv_model_param_show(
         )
     if measured_q_dva.size == 0 or measured_dva.size == 0:
         raise ValueError(
-            "Measured DVA arrays are missing. "
-            "Expected in result.dva_q_measured/dva_measured."
+            "Measured DVA arrays are missing. " "Expected in result.dva_q_measured/dva_measured."
         )
     if reconstructed_q_dva.size == 0 or reconstructed_dva.size == 0:
         raise ValueError(
@@ -438,7 +437,7 @@ def plot_ocv_model_param_show(
     axes_top = 0.96
 
     # OCV panel (2x height)
-    h_meas, = ax1.plot(
+    (h_meas,) = ax1.plot(
         measured_q,
         measured_u,
         color=col_meas,
@@ -446,7 +445,7 @@ def plot_ocv_model_param_show(
         linestyle="-",
         label="FC measured",
     )
-    h_recon, = ax1.plot(
+    (h_recon,) = ax1.plot(
         reconstructed_q,
         reconstructed_u,
         color=col_model,
@@ -454,7 +453,7 @@ def plot_ocv_model_param_show(
         linestyle="-.",
         label="FC reconstructed",
     )
-    h_cath, = ax1.plot(
+    (h_cath,) = ax1.plot(
         cathode_soc,
         cathode_u,
         color=col_cathode,
@@ -462,7 +461,7 @@ def plot_ocv_model_param_show(
         linestyle="-.",
         label=f"{labels['label_cathode']} reconstructed",
     )
-    h_an, = ax1.plot(
+    (h_an,) = ax1.plot(
         anode_soc,
         anode_u,
         color=col_anode,
@@ -569,8 +568,10 @@ def plot_ocv_model_param_show(
         float(np.min(anode_u) + beta_an_arrow_y_offset),
         col_anode,
     )
-    beta_text_x = 0.03 if x_lim_dyn[0] <= 0.03 <= x_lim_dyn[1] else x_lim_dyn[0] + 0.03 * (
-        x_lim_dyn[1] - x_lim_dyn[0]
+    beta_text_x = (
+        0.03
+        if x_lim_dyn[0] <= 0.03 <= x_lim_dyn[1]
+        else x_lim_dyn[0] + 0.03 * (x_lim_dyn[1] - x_lim_dyn[0])
     )
     ax1.text(
         beta_text_x,
@@ -682,17 +683,23 @@ def plot_ocv_comparison(
 
     # Plot measured
     ax.plot(
-        measured_capacity, measured_voltage,
-        '-', color=TUM_COLORS['blue'], linewidth=2,
-        label='Measured'
+        measured_capacity,
+        measured_voltage,
+        "-",
+        color=TUM_COLORS["blue"],
+        linewidth=2,
+        label="Measured",
     )
 
     # Plot simulated if provided
     if simulated_capacity is not None and simulated_voltage is not None:
         ax.plot(
-            simulated_capacity, simulated_voltage,
-            '--', color=TUM_COLORS['orange'], linewidth=2,
-            label='Simulated'
+            simulated_capacity,
+            simulated_voltage,
+            "--",
+            color=TUM_COLORS["orange"],
+            linewidth=2,
+            label="Simulated",
         )
 
     def _is_normalized_capacity(values: NDArray[np.floating]) -> bool:
@@ -740,10 +747,10 @@ def plot_ocv_comparison(
         y_lim = (y_min - 0.30, y_max + 0.04 * range_y)
         ax.set_ylim(*y_lim)
 
-    ax.set_xlabel(r'SOC / -' if is_normalized else r'$Q$ / Ah')
-    ax.set_ylabel(r'$U$ / V')
+    ax.set_xlabel(r"SOC / -" if is_normalized else r"$Q$ / Ah")
+    ax.set_ylabel(r"$U$ / V")
     ax.set_title(title)
-    ax.legend(loc='best')
+    ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
 
     return ax
@@ -792,21 +799,22 @@ def plot_dva_comparison(
 
     # Plot ROI region if specified
     if soc_min is not None and soc_max is not None:
-        ax.axvspan(soc_min, soc_max, alpha=0.1, color='green', label='ROI')
+        ax.axvspan(soc_min, soc_max, alpha=0.1, color="green", label="ROI")
 
     # Plot measured
     ax.plot(
-        measured_soc, measured_dva,
-        '-', color=TUM_COLORS['blue'], linewidth=1.5,
-        label='Measured'
+        measured_soc, measured_dva, "-", color=TUM_COLORS["blue"], linewidth=1.5, label="Measured"
     )
 
     # Plot simulated if provided
     if simulated_soc is not None and simulated_dva is not None:
         ax.plot(
-            simulated_soc, simulated_dva,
-            '--', color=TUM_COLORS['orange'], linewidth=1.5,
-            label='Simulated'
+            simulated_soc,
+            simulated_dva,
+            "--",
+            color=TUM_COLORS["orange"],
+            linewidth=1.5,
+            label="Simulated",
         )
 
     # MATLAB-style limits (plot_OCV_model_param_show.m)
@@ -842,10 +850,10 @@ def plot_dva_comparison(
         y_lim = (max(0.0, y_min - 0.05 * range_y), 3.2)
         ax.set_ylim(*y_lim)
 
-    ax.set_xlabel(r'SOC / -')
-    ax.set_ylabel(r'$dU/dQ \cdot C_{\mathrm{act}}$ / V')
+    ax.set_xlabel(r"SOC / -")
+    ax.set_ylabel(r"$dU/dQ \cdot C_{\mathrm{act}}$ / V")
     ax.set_title(title)
-    ax.legend(loc='best')
+    ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
 
     return ax
@@ -894,27 +902,33 @@ def plot_ica_comparison(
 
     # Plot ROI region if specified
     if v_min is not None and v_max is not None:
-        ax.axvspan(v_min, v_max, alpha=0.1, color='green', label='ROI')
+        ax.axvspan(v_min, v_max, alpha=0.1, color="green", label="ROI")
 
     # Plot measured
     ax.plot(
-        measured_voltage, measured_ica,
-        '-', color=TUM_COLORS['blue'], linewidth=1.5,
-        label='Measured'
+        measured_voltage,
+        measured_ica,
+        "-",
+        color=TUM_COLORS["blue"],
+        linewidth=1.5,
+        label="Measured",
     )
 
     # Plot simulated if provided
     if simulated_voltage is not None and simulated_ica is not None:
         ax.plot(
-            simulated_voltage, simulated_ica,
-            '--', color=TUM_COLORS['orange'], linewidth=1.5,
-            label='Simulated'
+            simulated_voltage,
+            simulated_ica,
+            "--",
+            color=TUM_COLORS["orange"],
+            linewidth=1.5,
+            label="Simulated",
         )
 
-    ax.set_xlabel(r'$U$ / V')
-    ax.set_ylabel(r'$dQ/dU$ / Ah V$^{-1}$')
+    ax.set_xlabel(r"$U$ / V")
+    ax.set_ylabel(r"$dQ/dU$ / Ah V$^{-1}$")
     ax.set_title(title)
-    ax.legend(loc='best')
+    ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
 
     return ax
@@ -964,69 +978,70 @@ def plot_degradation_modes(
     colors = []
 
     # LLI
-    modes.append('LLI')
+    modes.append("LLI")
     values.append(degradation_modes.lli * 100)
-    colors.append(TUM_COLORS['blue'])
+    colors.append(TUM_COLORS["blue"])
 
     # Anode LAM
-    modes.append('LAM_an')
+    modes.append("LAM_an")
     values.append(degradation_modes.lam_an * 100)
-    colors.append(TUM_COLORS['orange'])
+    colors.append(TUM_COLORS["orange"])
 
     # Anode blend components (if enabled)
     if show_anode_blend:
-        modes.append('An-blend1')
+        modes.append("An-blend1")
         values.append(degradation_modes.lam_anode_blend1 * 100)
-        colors.append(TUM_COLORS['light_blue'])
+        colors.append(TUM_COLORS["light_blue"])
 
-        modes.append('An-blend2')
+        modes.append("An-blend2")
         values.append(degradation_modes.lam_anode_blend2 * 100)
-        colors.append(TUM_COLORS['dark_blue'])
+        colors.append(TUM_COLORS["dark_blue"])
 
     # Cathode LAM
-    modes.append('LAM_ca')
+    modes.append("LAM_ca")
     values.append(degradation_modes.lam_ca * 100)
-    colors.append(TUM_COLORS['green'])
+    colors.append(TUM_COLORS["green"])
 
     # Cathode blend components (if enabled)
     if show_cathode_blend:
-        modes.append('Ca-blend1')
+        modes.append("Ca-blend1")
         values.append(degradation_modes.lam_cathode_blend1 * 100)
-        colors.append(TUM_COLORS['lighter_blue'])
+        colors.append(TUM_COLORS["lighter_blue"])
 
-        modes.append('Ca-blend2')
+        modes.append("Ca-blend2")
         values.append(degradation_modes.lam_cathode_blend2 * 100)
-        colors.append(TUM_COLORS['medium_gray'])
+        colors.append(TUM_COLORS["medium_gray"])
 
     # Capacity loss (always last)
-    modes.append('Capacity\nLoss')
+    modes.append("Capacity\nLoss")
     values.append(degradation_modes.capacity_loss * 100)
-    colors.append(TUM_COLORS['gray'])
+    colors.append(TUM_COLORS["gray"])
 
     # Create bar chart
-    bars = ax.bar(modes, values, color=colors, edgecolor='black', linewidth=0.5)
+    bars = ax.bar(modes, values, color=colors, edgecolor="black", linewidth=0.5)
 
     # Add value labels
     if show_values:
         for bar, value in zip(bars, values):
             height = bar.get_height()
             ax.annotate(
-                f'{value:.1f}%',
+                f"{value:.1f}%",
                 xy=(bar.get_x() + bar.get_width() / 2, height),
                 xytext=(0, 3),
-                textcoords='offset points',
-                ha='center', va='bottom',
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
                 fontsize=9,
             )
 
-    ax.set_ylabel('Degradation / %')
+    ax.set_ylabel("Degradation / %")
     ax.set_title(title)
-    ax.axhline(y=0, color='black', linewidth=0.5)
-    ax.grid(True, alpha=0.3, axis='y')
+    ax.axhline(y=0, color="black", linewidth=0.5)
+    ax.grid(True, alpha=0.3, axis="y")
 
     # Rotate labels if many bars
     if len(modes) > 5:
-        ax.tick_params(axis='x', rotation=30)
+        ax.tick_params(axis="x", rotation=30)
 
     return ax
 
@@ -1067,48 +1082,51 @@ def plot_dma_result(
     _setup_style()
 
     fig, axes = plt.subplots(2, 2, figsize=figsize)
-    fig.suptitle('Degradation Mode Analysis Results', fontsize=14, fontweight='bold')
+    fig.suptitle("Degradation Mode Analysis Results", fontsize=14, fontweight="bold")
 
     # Prepare simulated data if available
     sim_cap = sim_volt = sim_dva = sim_ica = None
     if simulated_curves is not None:
-        sim_cap = simulated_curves.get('capacity')
-        sim_volt = simulated_curves.get('voltage')
-        sim_dva = simulated_curves.get('dva')
-        sim_ica = simulated_curves.get('ica')
+        sim_cap = simulated_curves.get("capacity")
+        sim_volt = simulated_curves.get("voltage")
+        sim_dva = simulated_curves.get("dva")
+        sim_ica = simulated_curves.get("ica")
 
     # OCV comparison
     plot_ocv_comparison(
         result.measured_capacity,
         result.measured_voltage,
-        sim_cap, sim_volt,
+        sim_cap,
+        sim_volt,
         ax=axes[0, 0],
-        title='OCV Comparison',
+        title="OCV Comparison",
     )
 
     # DVA comparison
     plot_dva_comparison(
         result.measured_capacity,
         result.measured_dva,
-        sim_cap, sim_dva,
+        sim_cap,
+        sim_dva,
         ax=axes[0, 1],
-        title='DVA Comparison',
+        title="DVA Comparison",
     )
 
     # ICA comparison
     plot_ica_comparison(
         result.measured_voltage,
         result.measured_ica,
-        sim_volt, sim_ica,
+        sim_volt,
+        sim_ica,
         ax=axes[1, 0],
-        title='ICA Comparison',
+        title="ICA Comparison",
     )
 
     # Degradation modes
     plot_degradation_modes(
         result.degradation_modes,
         ax=axes[1, 1],
-        title=f'Degradation Modes (RMSE: {result.rmse * 1000:.1f} mV)',
+        title=f"Degradation Modes (RMSE: {result.rmse * 1000:.1f} mV)",
         show_anode_blend=show_anode_blend,
         show_cathode_blend=show_cathode_blend,
     )
@@ -1175,14 +1193,14 @@ def plot_aging_study(
 
     # Default labels
     default_labels = {
-        'cathode': 'Cathode',
-        'anode': 'Anode',
-        'lli': 'Charge-carrier-inv',
-        'rmse': 'RMSE',
-        'anode_blend1': 'An-blend1',
-        'anode_blend2': 'An-blend2',
-        'cathode_blend1': 'Ca-blend1',
-        'cathode_blend2': 'Ca-blend2',
+        "cathode": "Cathode",
+        "anode": "Anode",
+        "lli": "Charge-carrier-inv",
+        "rmse": "RMSE",
+        "anode_blend1": "An-blend1",
+        "anode_blend2": "An-blend2",
+        "cathode_blend1": "Ca-blend1",
+        "cathode_blend2": "Ca-blend2",
     }
     if labels:
         default_labels.update(labels)
@@ -1211,27 +1229,27 @@ def plot_aging_study(
     # Cathode
     if plot_cathode:
         lam_ca = [r.degradation_modes.lam_ca * 100 for r in result_list]
-        panels.append((labels['cathode'], lam_ca))
+        panels.append((labels["cathode"], lam_ca))
         if use_cathode_blend:
             lam_ca_b1 = [r.degradation_modes.lam_cathode_blend1 * 100 for r in result_list]
             lam_ca_b2 = [r.degradation_modes.lam_cathode_blend2 * 100 for r in result_list]
-            panels.append((labels['cathode_blend1'], lam_ca_b1))
-            panels.append((labels['cathode_blend2'], lam_ca_b2))
+            panels.append((labels["cathode_blend1"], lam_ca_b1))
+            panels.append((labels["cathode_blend2"], lam_ca_b2))
 
     # Anode
     if plot_anode:
         lam_an = [r.degradation_modes.lam_an * 100 for r in result_list]
-        panels.append((labels['anode'], lam_an))
+        panels.append((labels["anode"], lam_an))
         if use_anode_blend:
             lam_an_b1 = [r.degradation_modes.lam_anode_blend1 * 100 for r in result_list]
             lam_an_b2 = [r.degradation_modes.lam_anode_blend2 * 100 for r in result_list]
-            panels.append((labels['anode_blend1'], lam_an_b1))
-            panels.append((labels['anode_blend2'], lam_an_b2))
+            panels.append((labels["anode_blend1"], lam_an_b1))
+            panels.append((labels["anode_blend2"], lam_an_b2))
 
     # LLI (Charge-carrier inventory)
     if plot_lli:
         lli = [r.degradation_modes.lli * 100 for r in result_list]
-        panels.append((labels['lli'], lli))
+        panels.append((labels["lli"], lli))
 
     # RMSE
     rmse_data = None
@@ -1247,8 +1265,8 @@ def plot_aging_study(
         figsize = (20 * 0.393701, 6 * 0.393701 * 1.2)  # cm to inches, slightly taller
 
     # Style constants (matching MATLAB)
-    tum_blue = TUM_COLORS['blue']
-    markers = ['-o', '-s', '-d', '-^', '-v', '-*']
+    tum_blue = TUM_COLORS["blue"]
+    markers = ["-o", "-s", "-d", "-^", "-v", "-*"]
     font_sz = 10
     line_width = 2
     marker_size = 5
@@ -1295,34 +1313,36 @@ def plot_aging_study(
         ax = lam_axes[idx]
         marker = markers[idx % len(markers)]
 
-        ax.plot(x_values, data, marker, color=tum_blue,
-                linewidth=line_width, markersize=marker_size)
+        ax.plot(
+            x_values, data, marker, color=tum_blue, linewidth=line_width, markersize=marker_size
+        )
 
         ax.set_title(label, fontsize=1.2 * font_sz)
         ax.set_xlabel(actual_x_label, fontsize=font_sz)
         ax.set_xlim(auto=True)
         ax.set_ylim(y_min_padded, y_max_padded)
         ax.grid(True, alpha=0.3)
-        ax.tick_params(direction='out', length=0)
+        ax.tick_params(direction="out", length=0)
 
         # Y-label only on first panel
         if idx == 0:
-            ax.set_ylabel('Capacity Loss / %', fontsize=font_sz)
+            ax.set_ylabel("Capacity Loss / %", fontsize=font_sz)
         else:
             ax.set_yticklabels([])
 
     # RMSE panel (separate y-axis)
     if plot_rmse and rmse_data is not None and ax_rmse is not None:
-        ax_rmse.plot(x_values, rmse_data, '-o', color=tum_blue,
-                     linewidth=line_width, markersize=marker_size)
+        ax_rmse.plot(
+            x_values, rmse_data, "-o", color=tum_blue, linewidth=line_width, markersize=marker_size
+        )
 
-        ax_rmse.set_title(labels['rmse'], fontsize=1.2 * font_sz)
+        ax_rmse.set_title(labels["rmse"], fontsize=1.2 * font_sz)
         ax_rmse.set_xlabel(actual_x_label, fontsize=font_sz)
-        ax_rmse.set_ylabel('RMSE / mV', fontsize=font_sz)
+        ax_rmse.set_ylabel("RMSE / mV", fontsize=font_sz)
         ax_rmse.set_xlim(auto=True)
         ax_rmse.set_ylim(0, max(rmse_data) * 1.1 if max(rmse_data) > 0 else 1)
         ax_rmse.grid(True, alpha=0.3)
-        ax_rmse.tick_params(direction='out', length=0)
+        ax_rmse.tick_params(direction="out", length=0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -1419,7 +1439,7 @@ class DMAPlotter:
     ) -> Figure:
         """Compare two DMA results side by side."""
         fig, axes = plt.subplots(1, 2, figsize=figsize)
-        fig.suptitle(f'Comparison: {labels[0]} vs {labels[1]}', fontsize=14, fontweight='bold')
+        fig.suptitle(f"Comparison: {labels[0]} vs {labels[1]}", fontsize=14, fontweight="bold")
 
         # Plot degradation modes for each
         plot_degradation_modes(
@@ -1468,7 +1488,7 @@ class DMAPlotter:
         paths = []
         for i, fig in enumerate(self._figures):
             path = f"{prefix}_{i+1}.{format}"
-            fig.savefig(path, format=format, dpi=dpi, bbox_inches='tight')
+            fig.savefig(path, format=format, dpi=dpi, bbox_inches="tight")
             paths.append(path)
         return paths
 

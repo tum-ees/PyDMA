@@ -58,9 +58,8 @@ needs. They are *not* the per-phase Gr/Si stoichiometries; for those
 use :meth:`pydma.BlendElectrode.get_component_stoichiometry_window`.
 """
 
-from dataclasses import dataclass
 from collections.abc import Iterable
-
+from dataclasses import dataclass
 
 F_FARADAY = 96485.0  # C / mol
 
@@ -69,12 +68,12 @@ F_FARADAY = 96485.0  # C / mol
 class CellGeometry:
     """User-supplied cell geometry — independent of PyDMA."""
 
-    eps_s_neg: float    # negative electrode active-material volume fraction
-    eps_s_pos: float    # positive electrode active-material volume fraction
-    L_neg: float        # negative electrode thickness [m]
-    L_pos: float        # positive electrode thickness [m]
-    A: float            # electrode area (width × height, single side) [m^2]
-    Q_BoL_Ah: float     # measured BoL capacity from the pOCV PyDMA was fit on [A.h]
+    eps_s_neg: float  # negative electrode active-material volume fraction
+    eps_s_pos: float  # positive electrode active-material volume fraction
+    L_neg: float  # negative electrode thickness [m]
+    L_pos: float  # positive electrode thickness [m]
+    A: float  # electrode area (width × height, single side) [m^2]
+    Q_BoL_Ah: float  # measured BoL capacity from the pOCV PyDMA was fit on [A.h]
 
 
 @dataclass(frozen=True)
@@ -90,15 +89,15 @@ class ElectrodeBalancing:
     parameter-name dict.
     """
 
-    c_max_neg: float                   # mol / m^3
-    c_max_pos: float                   # mol / m^3
+    c_max_neg: float  # mol / m^3
+    c_max_pos: float  # mol / m^3
     sto_window_neg: tuple[float, float]
     sto_window_pos: tuple[float, float]
-    util_neg: float                    # = sto_window_neg[1] - sto_window_neg[0]
-    util_pos: float                    # = sto_window_pos[0] - sto_window_pos[1] (positive)
-    Q_n: float                         # theoretical electrode capacity [A.h] = F·ε·L·A·c_max/3600
+    util_neg: float  # = sto_window_neg[1] - sto_window_neg[0]
+    util_pos: float  # = sto_window_pos[0] - sto_window_pos[1] (positive)
+    Q_n: float  # theoretical electrode capacity [A.h] = F·ε·L·A·c_max/3600
     Q_p: float
-    Q_Li: float                        # cyclable Li at 100 % SOC [A.h]
+    Q_Li: float  # cyclable Li at 100 % SOC [A.h]
     eps_s_neg: float
     eps_s_pos: float
     L_neg: float
@@ -112,7 +111,7 @@ class ElectrodeBalancing:
 
     def c_init_pos(self, soc: float) -> float:
         """Positive-electrode initial concentration [mol/m^3] at the given cell SOC."""
-        y_lo, y_hi = self.sto_window_pos     # y_hi at SoC=1 (delithiated, small value)
+        y_lo, y_hi = self.sto_window_pos  # y_hi at SoC=1 (delithiated, small value)
         return (y_lo + soc * (y_hi - y_lo)) * self.c_max_pos
 
     # ------------------------------------------------------------------
@@ -180,11 +179,10 @@ def derive_balancing(
     y_lo, y_hi = float(pos[0]), float(pos[1])
 
     util_neg = x_hi - x_lo
-    util_pos = y_lo - y_hi   # PyBaMM x_p convention: y_lo (V_min) > y_hi (V_max)
+    util_pos = y_lo - y_hi  # PyBaMM x_p convention: y_lo (V_min) > y_hi (V_max)
     if util_neg <= 0:
         raise ValueError(
-            f"sto_window_neg must be increasing (V_min -> V_max); got "
-            f"[{x_lo}, {x_hi}]"
+            f"sto_window_neg must be increasing (V_min -> V_max); got " f"[{x_lo}, {x_hi}]"
         )
     if util_pos <= 0:
         raise ValueError(
@@ -200,7 +198,7 @@ def derive_balancing(
 
     Q_n = F_FARADAY * geometry.eps_s_neg * geometry.L_neg * geometry.A * c_max_neg / 3600.0
     Q_p = F_FARADAY * geometry.eps_s_pos * geometry.L_pos * geometry.A * c_max_pos / 3600.0
-    Q_Li = x_hi * Q_n + y_hi * Q_p   # ESOH: Q_Li = x_100·Q_n + y_100·Q_p
+    Q_Li = x_hi * Q_n + y_hi * Q_p  # ESOH: Q_Li = x_100·Q_n + y_100·Q_p
 
     return ElectrodeBalancing(
         c_max_neg=c_max_neg,

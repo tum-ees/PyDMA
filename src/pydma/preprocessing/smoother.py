@@ -7,8 +7,8 @@ moving average filters.
 """
 
 import numpy as np
-from scipy.signal import savgol_filter
 from scipy.ndimage import uniform_filter1d
+from scipy.signal import savgol_filter
 
 
 def smooth_lowess(
@@ -48,9 +48,8 @@ def smooth_lowess(
     except ImportError:
         # Fallback to Savitzky-Golay if statsmodels not available
         import warnings
-        warnings.warn(
-            "statsmodels not available, falling back to Savitzky-Golay filter"
-        )
+
+        warnings.warn("statsmodels not available, falling back to Savitzky-Golay filter")
         window = max(3, int(frac * len(y)))
         if window % 2 == 0:
             window += 1
@@ -75,9 +74,7 @@ def smooth_lowess(
         x_valid = x[valid_mask]
         if len(y_valid) < 2:
             return y.copy()
-        smoothed_valid = lowess(
-            y_valid, x_valid, frac=frac, it=it, return_sorted=False
-        )
+        smoothed_valid = lowess(y_valid, x_valid, frac=frac, it=it, return_sorted=False)
         y_smooth = np.full_like(y, np.nan)
         y_smooth[valid_mask] = smoothed_valid
         return y_smooth
@@ -298,6 +295,7 @@ def apply_filter(
     # Handle outliers if requested
     if fill_outliers:
         from scipy.stats import zscore
+
         z = zscore(data, nan_policy="omit")
         outliers = np.abs(z) > 3
         if np.any(outliers):
@@ -322,6 +320,7 @@ def apply_filter(
             result = smooth_moving_average(result, window)
         elif method == "movmedian":
             from scipy.ndimage import median_filter
+
             result = median_filter(result, size=window, mode="nearest")
         elif method == "gaussian":
             result = smooth_gaussian(result, sigma=window / 3)

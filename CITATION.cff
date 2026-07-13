@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+message: >-
+  If you use PyDMA in published work, please cite the preferred article below
+  and the software version used in your analysis.
+title: "PyDMA: Battery Degradation Mode Analysis"
+type: software
+version: 1.1.1
+date-released: 2026-07-13
+license: BSD-3-Clause
+repository-code: "https://github.com/tum-ees/PyDMA"
+url: "https://github.com/tum-ees/PyDMA"
+authors:
+  - family-names: Rehm
+    given-names: Mathias
+  - family-names: Eizenhammer
+    given-names: Josef
+  - family-names: Günthner
+    given-names: Moritz
+keywords:
+  - battery degradation
+  - degradation mode analysis
+  - lithium-ion batteries
+  - sodium-ion batteries
+  - open-circuit voltage
+  - differential voltage analysis
+  - incremental capacity analysis
+preferred-citation:
+  type: article
+  title: >-
+    How to determine the degradation modes of lithium-ion batteries with
+    silicon–graphite blend electrodes
+  authors:
+    - family-names: Rehm
+      given-names: Mathias
+    - family-names: Natterer
+      given-names: Johannes
+    - family-names: Eizenhammer
+      given-names: Josef
+    - family-names: Günthner
+      given-names: Moritz
+    - family-names: Kücher
+      given-names: Simon
+    - family-names: Korkmaz
+      given-names: Can
+    - family-names: Röhrer
+      given-names: Florian
+    - family-names: Jossen
+      given-names: Andreas
+  journal: Journal of Power Sources
+  volume: 670
+  year: 2026
+  doi: 10.1016/j.jpowsour.2026.239418

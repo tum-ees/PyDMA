@@ -1,8 +1,8 @@
 """Core modules package."""
 
 from pydma.core.analyzer import DMAAnalyzer
+from pydma.core.objectives import combined_objective, fit_dva, fit_ica, fit_ocv
 from pydma.core.optimizer import DMAOptimizer
-from pydma.core.objectives import fit_ocv, fit_dva, fit_ica, combined_objective
 
 __all__ = [
     "DMAAnalyzer",

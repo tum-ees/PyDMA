@@ -15,11 +15,11 @@ No GUI is provided - use the programmatic interface instead.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
-from numpy.typing import NDArray
 import scipy.io
+from numpy.typing import NDArray
 
 from pydma.preprocessing.smoother import smooth_lowess
 from pydma.silicon.strict_sto import _collapse_plateaus, _pav_isotonic
@@ -89,8 +89,8 @@ class SiliconCurveResult:
             Dictionary with 'soc' and 'voltage' keys
         """
         return {
-            'soc': self.normalized_capacity,
-            'voltage': self.voltage,
+            "soc": self.normalized_capacity,
+            "voltage": self.voltage,
         }
 
     def save(self, path: str | Path) -> None:
@@ -102,14 +102,14 @@ class SiliconCurveResult:
             Output file path (will add .mat if needed)
         """
         path = Path(path)
-        if path.suffix.lower() != '.mat':
-            path = path.with_suffix('.mat')
+        if path.suffix.lower() != ".mat":
+            path = path.with_suffix(".mat")
 
         silicon_struct = {
-            'voltage': self.voltage,
-            'normalizedCapacity': self.normalized_capacity,
+            "voltage": self.voltage,
+            "normalizedCapacity": self.normalized_capacity,
         }
-        scipy.io.savemat(str(path), {'siliconStruct': silicon_struct})
+        scipy.io.savemat(str(path), {"siliconStruct": silicon_struct})
 
 
 def load_ocp_data(
@@ -134,9 +134,9 @@ def load_ocp_data(
 
     # Find the struct (usually first non-private variable)
     for key, value in data.items():
-        if key.startswith('_'):
+        if key.startswith("_"):
             continue
-        if hasattr(value, 'voltage') and hasattr(value, 'normalizedCapacity'):
+        if hasattr(value, "voltage") and hasattr(value, "normalizedCapacity"):
             return (
                 np.asarray(value.voltage, dtype=np.float64).flatten(),
                 np.asarray(value.normalizedCapacity, dtype=np.float64).flatten(),
@@ -166,11 +166,11 @@ def load_blend_data(
 
     # Find the data (try different formats)
     for key, value in data.items():
-        if key.startswith('_'):
+        if key.startswith("_"):
             continue
 
         # Standard struct format
-        if hasattr(value, 'voltage') and hasattr(value, 'normalizedCapacity'):
+        if hasattr(value, "voltage") and hasattr(value, "normalizedCapacity"):
             return (
                 np.asarray(value.voltage, dtype=np.float64).flatten(),
                 np.asarray(value.normalizedCapacity, dtype=np.float64).flatten(),
@@ -180,7 +180,7 @@ def load_blend_data(
         if isinstance(value, np.ndarray) and value.ndim == 0:
             # Scalar cell array
             inner = value.item()
-            if hasattr(inner, 'TestData'):
+            if hasattr(inner, "TestData"):
                 td = inner.TestData
                 return (
                     np.asarray(td.voltage, dtype=np.float64).flatten(),
@@ -189,7 +189,7 @@ def load_blend_data(
         elif isinstance(value, np.ndarray):
             # Array of structs
             for item in value.flat:
-                if hasattr(item, 'TestData'):
+                if hasattr(item, "TestData"):
                     td = item.TestData
                     return (
                         np.asarray(td.voltage, dtype=np.float64).flatten(),
@@ -352,6 +352,7 @@ def generate_si_curve(
 
     if filter_input is not None:
         import warnings
+
         warnings.warn(
             "filter_input is deprecated; use filter_blend and filter_graphite instead.",
             DeprecationWarning,
@@ -386,8 +387,8 @@ def generate_si_curve(
     blend_v, blend_q = _smooth_unique(blend_v, blend_q, filter_blend)
 
     # Find common voltage window
-    v_min = max(gr_v.min(), blend_v.min())
-    v_max = min(gr_v.max(), blend_v.max())
+    v_min = float(max(gr_v.min(), blend_v.min()))
+    v_max = float(min(gr_v.max(), blend_v.max()))
 
     # Trim and renormalize
     gr_v, gr_q = _trim_and_renorm(gr_v, gr_q, v_min, v_max)
@@ -432,9 +433,9 @@ def generate_si_curve(
     # Enforce monotonicity via isotonic regression (PAV)
     if monotone_filter:
         if q_si[-1] < q_si[0]:
-            q_si = _pav_isotonic(q_si, 'nonincreasing')
+            q_si = _pav_isotonic(q_si, "nonincreasing")
         else:
-            q_si = _pav_isotonic(q_si, 'nondecreasing')
+            q_si = _pav_isotonic(q_si, "nondecreasing")
         # Plateau-collapse is opt-in. Removing PAV plateau interiors makes the
         # curve a strict function of SOC (needed for downstream SOC->V
         # consumers) but under-resolves the low-V silicon plateau and breaks
@@ -442,7 +443,9 @@ def generate_si_curve(
         # this disabled for fitting; enable only for export paths that need
         # strict monotonicity in SOC.
         if collapse_plateaus:
-            v_common, q_si = _collapse_plateaus(v_common, q_si)
+            collapsed_v, collapsed_q = _collapse_plateaus(v_common, q_si)
+            v_common = cast(NDArray[np.float64], collapsed_v)
+            q_si = cast(NDArray[np.float64], collapsed_q)
             q_gr = np.interp(v_common, gr_v, gr_q)
             q_blend = np.interp(v_common, blend_v, blend_q)
 
@@ -458,13 +461,13 @@ def generate_si_curve(
 
 
 # Convenience function for common graphite sources
-GraphiteSource = Literal['Rehm2026', 'Schmitt', 'Rehm2025', 'Hossain', 'Wetjen']
-LithDirection = Literal['lithiation', 'delithiation']
+GraphiteSource = Literal["Rehm2026", "Schmitt", "Rehm2025", "Hossain", "Wetjen"]
+LithDirection = Literal["lithiation", "delithiation"]
 
 
 def get_builtin_graphite_path(
-    source: GraphiteSource = 'Rehm2026',
-    direction: LithDirection = 'lithiation',
+    source: GraphiteSource = "Rehm2026",
+    direction: LithDirection = "lithiation",
 ) -> Path | None:
     """Get path to built-in graphite reference data.
 
@@ -485,17 +488,18 @@ def get_builtin_graphite_path(
         Path to MAT file if available, None otherwise
     """
     # Schmitt only has lithiation
-    if source == 'Schmitt' and direction == 'delithiation':
+    if source == "Schmitt" and direction == "delithiation":
         return None
 
     # Look for data in package directory
     import pydma
+
     package_dir = Path(pydma.__file__).parent
-    data_dir = package_dir / 'data' / 'Graphite'
+    data_dir = package_dir / "data" / "Graphite"
 
     direction_cap = direction.capitalize()
     source_cap = source.capitalize()
-    filename = f'Gr_{direction_cap}_{source_cap}.mat'
+    filename = f"Gr_{direction_cap}_{source_cap}.mat"
 
     path = data_dir / filename
     if path.exists():

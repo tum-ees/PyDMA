@@ -38,7 +38,7 @@ __all__ = ["pchip_resample_for_pybamm"]
 
 def _pav_isotonic(
     q_raw: NDArray[np.floating],
-    direction: str = 'nondecreasing',
+    direction: str = "nondecreasing",
 ) -> NDArray[np.floating]:
     """Isotonic regression via Pool Adjacent Violators (PAV).
 
@@ -57,7 +57,7 @@ def _pav_isotonic(
         Monotone capacity values.
     """
     q = q_raw.copy()
-    if direction == 'nonincreasing':
+    if direction == "nonincreasing":
         q = -q
     n = len(q)
     val = np.zeros(n)
@@ -75,9 +75,9 @@ def _pav_isotonic(
     result = np.empty(n)
     idx = 0
     for k in range(nb):
-        result[idx:idx + sz[k]] = val[k]
+        result[idx : idx + sz[k]] = val[k]
         idx += sz[k]
-    if direction == 'nonincreasing':
+    if direction == "nonincreasing":
         result = -result
     return result
 
@@ -150,7 +150,7 @@ def _collapse_plateaus(
         while j + 1 < n and q_clean[j + 1] == q_clean[i]:
             j += 1
         if j > i + 1:
-            keep[i + 1:j] = False
+            keep[i + 1 : j] = False
         i = j + 1
 
     v_out = voltage[keep].copy()
@@ -286,8 +286,7 @@ def pchip_resample_for_pybamm(
     sto = np.asarray(sto, dtype=np.float64)
     if voltage.shape != sto.shape:
         raise ValueError(
-            f"voltage and sto must have identical shape; got {voltage.shape} "
-            f"vs {sto.shape}."
+            f"voltage and sto must have identical shape; got {voltage.shape} " f"vs {sto.shape}."
         )
     if voltage.size < 2:
         raise ValueError(f"Need at least 2 samples; got {voltage.size}.")
@@ -306,8 +305,7 @@ def pchip_resample_for_pybamm(
     v_dedup = v_sorted[keep]
     if sto_dedup.size < 2:
         raise ValueError(
-            "After dedup, fewer than 2 unique sto values remain. "
-            "Input is degenerate."
+            "After dedup, fewer than 2 unique sto values remain. " "Input is degenerate."
         )
 
     pchip = PchipInterpolator(sto_dedup, v_dedup)

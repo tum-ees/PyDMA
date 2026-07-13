@@ -16,6 +16,7 @@ Run everything except these (fast suite):
 To refresh the golden numbers after an intentional, validated change,
 re-run ``tests/_golden_probe.py`` and replace the JSON.
 """
+
 import json
 import math
 import sys
@@ -51,10 +52,10 @@ pytestmark = pytest.mark.skipif(
 # Tolerances chosen to (a) survive numpy/scipy patch-level drift on the
 # supported floors and (b) still catch real shifts. RMSE moves the least
 # (~1e-7 across reruns); fitted params can move at the 5th-6th decimal.
-ABS_TOL_RMSE = 5e-5      # 0.05 mV
+ABS_TOL_RMSE = 5e-5  # 0.05 mV
 ABS_TOL_PARAM = 5e-4
-ABS_TOL_DEGMODE = 1e-3   # 0.1 % LLI/LAM
-REL_TOL = 2e-3           # 0.2 %
+ABS_TOL_DEGMODE = 1e-3  # 0.1 % LLI/LAM
+REL_TOL = 2e-3  # 0.2 %
 
 
 def _assert_close(actual: float, expected: float, *, abs_tol: float, name: str) -> None:
@@ -78,9 +79,7 @@ def test_p45b_serial23_entry01_cu1_nonblend() -> None:
         golden = json.load(f)
     cfg_in = golden["config"]
 
-    anode_df = pd.read_csv(
-        INPUT_DIR / "SiGr_blend_anode" / "P45B_Anode_Lithiation_0C03.csv"
-    )
+    anode_df = pd.read_csv(INPUT_DIR / "SiGr_blend_anode" / "P45B_Anode_Lithiation_0C03.csv")
     anode = ElectrodeOCP(
         soc=anode_df["normalizedCapacity"].values,
         voltage=anode_df["voltage"].values,
@@ -121,9 +120,7 @@ def test_p45b_serial23_entry01_cu1_nonblend() -> None:
     analyzer.set_cathode(cathode)
     analyzer.set_reference_capacity(ref_cap)
 
-    result = analyzer.analyze(
-        measured_capacity=meas_cap, measured_voltage=meas_volt
-    )
+    result = analyzer.analyze(measured_capacity=meas_cap, measured_voltage=meas_volt)
 
     _assert_close(result.rmse, golden["rmse"], abs_tol=ABS_TOL_RMSE, name="rmse")
     _assert_close(
@@ -151,16 +148,12 @@ def test_p45b_serial23_entry01_cu1_nonblend() -> None:
         "sto_init_an",
         "sto_init_ca",
     ):
-        _assert_close(
-            float(getattr(fp, key)), g_fp[key], abs_tol=ABS_TOL_PARAM, name=key
-        )
+        _assert_close(float(getattr(fp, key)), g_fp[key], abs_tol=ABS_TOL_PARAM, name=key)
 
     dm = result.degradation_modes
     g_dm = golden["degradation_modes"]
     for key in ("lli", "lam_an", "lam_ca"):
-        _assert_close(
-            float(getattr(dm, key)), g_dm[key], abs_tol=ABS_TOL_DEGMODE, name=key
-        )
+        _assert_close(float(getattr(dm, key)), g_dm[key], abs_tol=ABS_TOL_DEGMODE, name=key)
 
 
 @pytest.mark.scientific
@@ -172,9 +165,7 @@ def test_random_seed_is_deterministic() -> None:
     ``differential_evolution``, the parameters will diverge here long before
     the heavier golden test starts flapping.
     """
-    anode_df = pd.read_csv(
-        INPUT_DIR / "SiGr_blend_anode" / "P45B_Anode_Lithiation_0C03.csv"
-    )
+    anode_df = pd.read_csv(INPUT_DIR / "SiGr_blend_anode" / "P45B_Anode_Lithiation_0C03.csv")
     anode = ElectrodeOCP(
         soc=anode_df["normalizedCapacity"].values,
         voltage=anode_df["voltage"].values,

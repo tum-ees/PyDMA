@@ -6,6 +6,7 @@ from OCV data.
 """
 
 import numpy as np
+
 from pydma.preprocessing.smoother import apply_filter, assure_non_zero_dv
 
 

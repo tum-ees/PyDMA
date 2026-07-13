@@ -37,18 +37,30 @@ def _expected_c_max(Q_BoL_Ah, F, eps, L, A, util):
 def test_derive_balancing_matches_closed_form():
     """c_max and c_init match the closed-form formula by hand."""
     geom = _geom()
-    sto_neg = (0.05, 0.95)        # util_neg = 0.90
-    sto_pos = (0.85, 0.10)        # util_pos = 0.75
+    sto_neg = (0.05, 0.95)  # util_neg = 0.90
+    sto_pos = (0.85, 0.10)  # util_pos = 0.75
     bal = derive_balancing(
-        sto_window_neg=sto_neg, sto_window_pos=sto_pos, geometry=geom,
+        sto_window_neg=sto_neg,
+        sto_window_pos=sto_pos,
+        geometry=geom,
     )
     util_neg = sto_neg[1] - sto_neg[0]
     util_pos = sto_pos[0] - sto_pos[1]
     expected_c_max_neg = _expected_c_max(
-        geom.Q_BoL_Ah, F_FARADAY, geom.eps_s_neg, geom.L_neg, geom.A, util_neg,
+        geom.Q_BoL_Ah,
+        F_FARADAY,
+        geom.eps_s_neg,
+        geom.L_neg,
+        geom.A,
+        util_neg,
     )
     expected_c_max_pos = _expected_c_max(
-        geom.Q_BoL_Ah, F_FARADAY, geom.eps_s_pos, geom.L_pos, geom.A, util_pos,
+        geom.Q_BoL_Ah,
+        F_FARADAY,
+        geom.eps_s_pos,
+        geom.L_pos,
+        geom.A,
+        util_pos,
     )
     assert math.isclose(bal.c_max_neg, expected_c_max_neg, rel_tol=1e-12)
     assert math.isclose(bal.c_max_pos, expected_c_max_pos, rel_tol=1e-12)
@@ -64,7 +76,9 @@ def test_derive_balancing_matches_closed_form():
 
 def test_pybamm_overrides_returns_canonical_keys():
     bal = derive_balancing(
-        sto_window_neg=(0.05, 0.95), sto_window_pos=(0.85, 0.10), geometry=_geom(),
+        sto_window_neg=(0.05, 0.95),
+        sto_window_pos=(0.85, 0.10),
+        geometry=_geom(),
     )
     overrides = bal.pybamm_overrides(soc=0.5)
     assert set(overrides) == {
@@ -82,7 +96,7 @@ def test_pybamm_overrides_returns_canonical_keys():
 def test_negative_window_must_be_increasing():
     with pytest.raises(ValueError, match="sto_window_neg must be increasing"):
         derive_balancing(
-            sto_window_neg=(0.95, 0.05),         # decreasing -> util_neg <= 0
+            sto_window_neg=(0.95, 0.05),  # decreasing -> util_neg <= 0
             sto_window_pos=(0.85, 0.10),
             geometry=_geom(),
         )
@@ -92,7 +106,7 @@ def test_positive_window_must_be_decreasing_in_x_p_convention():
     with pytest.raises(ValueError, match="sto_window_pos must be decreasing"):
         derive_balancing(
             sto_window_neg=(0.05, 0.95),
-            sto_window_pos=(0.10, 0.85),         # increasing -> util_pos <= 0 in x_p
+            sto_window_pos=(0.10, 0.85),  # increasing -> util_pos <= 0 in x_p
             geometry=_geom(),
         )
 
@@ -100,7 +114,7 @@ def test_positive_window_must_be_decreasing_in_x_p_convention():
 def test_window_length_must_be_two():
     with pytest.raises(ValueError, match="must each have exactly 2 entries"):
         derive_balancing(
-            sto_window_neg=(0.05, 0.50, 0.95),   # three entries
+            sto_window_neg=(0.05, 0.50, 0.95),  # three entries
             sto_window_pos=(0.85, 0.10),
             geometry=_geom(),
         )
@@ -110,7 +124,9 @@ def test_generator_input_works():
     """Iterable typing + tuple coercion should accept generators."""
     geom = _geom()
     bal_seq = derive_balancing(
-        sto_window_neg=(0.05, 0.95), sto_window_pos=(0.85, 0.10), geometry=geom,
+        sto_window_neg=(0.05, 0.95),
+        sto_window_pos=(0.85, 0.10),
+        geometry=geom,
     )
     bal_gen = derive_balancing(
         sto_window_neg=(x for x in (0.05, 0.95)),
@@ -165,7 +181,9 @@ def test_q_li_consistency_with_x_100_y_100():
     sto_neg = (0.05, 0.95)
     sto_pos = (0.85, 0.10)
     bal = derive_balancing(
-        sto_window_neg=sto_neg, sto_window_pos=sto_pos, geometry=geom,
+        sto_window_neg=sto_neg,
+        sto_window_pos=sto_pos,
+        geometry=geom,
     )
     expected_Q_Li = sto_neg[1] * bal.Q_n + sto_pos[1] * bal.Q_p
     assert math.isclose(bal.Q_Li, expected_Q_Li, rel_tol=1e-12)

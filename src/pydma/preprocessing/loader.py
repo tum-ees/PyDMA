@@ -6,7 +6,8 @@ from various file formats with automatic column name detection.
 """
 
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
 import pandas as pd
 
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
 try:
     from scipy.io import loadmat
+
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
@@ -259,7 +261,9 @@ def _find_data_keys(mapping: dict[str, Any], electrode_type: str) -> tuple[str |
     return x_key, voltage_key
 
 
-def _extract_fullcell_capacity_from_mapping(mapping: dict[str, Any], x_key: str | None) -> float | None:
+def _extract_fullcell_capacity_from_mapping(
+    mapping: dict[str, Any], x_key: str | None
+) -> float | None:
     """Extract total capacity from a full-cell data mapping when available."""
     keys = list(mapping.keys())
     capacity_key = _find_matching_name(keys, FULLCELL_CAPACITY_COLUMN_PATTERNS)
@@ -335,7 +339,9 @@ def _extract_aging_study_from_mat(
         if direct_cu_keys:
             parsed_any = False
             for cu_key in sorted(direct_cu_keys, key=_cu_sort_key):
-                soc, voltage, capacity = _extract_soc_voltage_from_mat(container[cu_key], "fullcell")
+                soc, voltage, capacity = _extract_soc_voltage_from_mat(
+                    container[cu_key], "fullcell"
+                )
                 results[_coerce_cu_name(cu_key)] = (soc, voltage, capacity)
                 parsed_any = True
             if parsed_any:
@@ -446,7 +452,9 @@ def auto_detect_columns(
 
     # Detect capacity column (optional)
     capacity_patterns = (
-        FULLCELL_CAPACITY_COLUMN_PATTERNS if electrode_type == "fullcell" else CAPACITY_COLUMN_PATTERNS
+        FULLCELL_CAPACITY_COLUMN_PATTERNS
+        if electrode_type == "fullcell"
+        else CAPACITY_COLUMN_PATTERNS
     )
     capacity_col = _find_matching_name(
         [col for col in columns if col not in {result["soc"], result["voltage"]}],
