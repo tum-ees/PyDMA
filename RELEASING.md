@@ -18,7 +18,7 @@ scope-bearing commits first; the steps below are the final polish.
 git switch -c release/vX.Y.Z main
 ```
 
-## 2. Bump the version
+## 2. Bump the version and citation metadata
 
 Single source of truth: [src/pydma/_version.py](src/pydma/_version.py).
 `pyproject.toml` reads it dynamically via `[tool.setuptools.dynamic]`.
@@ -26,6 +26,13 @@ Single source of truth: [src/pydma/_version.py](src/pydma/_version.py).
 ```python
 # src/pydma/_version.py
 __version__ = "X.Y.Z"
+```
+
+Update both release fields in [CITATION.cff](CITATION.cff) at the same time:
+
+```yaml
+version: X.Y.Z
+date-released: YYYY-MM-DD
 ```
 
 ## 3. Update CHANGELOG.md
@@ -77,10 +84,10 @@ python -m ruff check src tests doc
 #     (stochastic DE without a seed); that is expected.
 #
 #   notebooks/pybamm_integration.ipynb
-#     Confirm the printed PyDMA version stamp matches the release, and
+#     Confirm the printed PyDMA version stamp matches the release and that
+#     saved output does not contain an absolute workstation path. Also confirm
 #     the PASS guard "DFN voltage RMSE within 30 mV tolerance" still
-#     holds at the end. Absolute __file__ paths in the cell outputs
-#     leak the workstation; that is expected and harmless.
+#     holds at the end.
 ```
 
 Working tree must be clean before the merge commit:

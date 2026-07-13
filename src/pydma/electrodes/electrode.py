@@ -6,6 +6,7 @@ open circuit potential data for anodes and cathodes.
 """
 
 from dataclasses import dataclass, field
+
 import numpy as np
 from scipy.interpolate import interp1d
 
@@ -79,8 +80,7 @@ class ElectrodeOCP:
 
         if self.electrode_type not in ("anode", "cathode"):
             raise ValueError(
-                "electrode_type must be 'anode' or 'cathode', "
-                f"got {self.electrode_type}"
+                "electrode_type must be 'anode' or 'cathode', " f"got {self.electrode_type}"
             )
 
         # =============================================================================
@@ -153,12 +153,12 @@ class ElectrodeOCP:
         DIFFERENCE FROM MATLAB: MATLAB's interp1(x,y,xq,'linear',0) returns 0
         for values outside the range. We replicate this behavior.
         """
-        assert self._interpolator is not None, "ElectrodeOCP not initialised; call _build_interpolator first"
+        assert (
+            self._interpolator is not None
+        ), "ElectrodeOCP not initialised; call _build_interpolator first"
         return np.asarray(self._interpolator(soc_query))
 
-    def get_potential_at_scaled_soc(
-        self, soc: np.ndarray, alpha: float, beta: float
-    ) -> np.ndarray:
+    def get_potential_at_scaled_soc(self, soc: np.ndarray, alpha: float, beta: float) -> np.ndarray:
         """
         Get potential at scaled SOC: alpha * soc + beta.
 

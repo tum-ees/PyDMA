@@ -1,8 +1,7 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
-
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -139,12 +138,15 @@ def test_calculate_inhomogeneity_matches_matlab_offset_formula():
     x_dev = x - 1.0
     alpha_eff = offset + (1.0 - offset) * soc
     x_query = soc[:, None] + alpha_eff[:, None] * x_dev[None, :]
-    expected = np.column_stack(
-        [
-            np.interp(x_query[:, j], soc, voltage, left=voltage[0], right=voltage[-1])
-            for j in range(len(x))
-        ]
-    ) @ weights
+    expected = (
+        np.column_stack(
+            [
+                np.interp(x_query[:, j], soc, voltage, left=voltage[0], right=voltage[-1])
+                for j in range(len(x))
+            ]
+        )
+        @ weights
+    )
 
     actual = calculate_inhomogeneity(
         soc,

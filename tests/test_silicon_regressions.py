@@ -17,8 +17,9 @@ so the linspace covers the full conceptual support intersection
 [v_min, v_max] rather than an inset range whose endpoints depend on input
 sampling.
 """
-from pathlib import Path
+
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -64,19 +65,26 @@ def test_pretrim_endpoints_used_for_common_grid():
     v_common = np.asarray(res.voltage, dtype=float)
 
     # n_points = max(len(gr_after_trim), len(blend_after_trim))
-    n_points = max(_trimmed_len(gr_v, v_min_pre, v_max_pre),
-                   _trimmed_len(blend_v, v_min_pre, v_max_pre))
+    n_points = max(
+        _trimmed_len(gr_v, v_min_pre, v_max_pre), _trimmed_len(blend_v, v_min_pre, v_max_pre)
+    )
     expected_step = (v_max_pre - v_min_pre) / (n_points - 1)
 
     # After mask_first drops index 0, the FIRST surviving entry equals
     # v_min + 1*step (the second linspace sample).
-    np.testing.assert_allclose(v_common[0], v_min_pre + expected_step, atol=1e-12,
-                               err_msg="v_common[0] should be v_min + one linspace step "
-                                       "(pre-trim behaviour)")
+    np.testing.assert_allclose(
+        v_common[0],
+        v_min_pre + expected_step,
+        atol=1e-12,
+        err_msg="v_common[0] should be v_min + one linspace step " "(pre-trim behaviour)",
+    )
     # The LAST surviving entry is exactly v_max.
-    np.testing.assert_allclose(v_common[-1], v_max_pre, atol=1e-12,
-                               err_msg="v_common[-1] should be exactly v_max "
-                                       "(pre-trim behaviour)")
+    np.testing.assert_allclose(
+        v_common[-1],
+        v_max_pre,
+        atol=1e-12,
+        err_msg="v_common[-1] should be exactly v_max " "(pre-trim behaviour)",
+    )
 
 
 def test_offset_blend_grid_starts_at_v_min():
@@ -93,8 +101,8 @@ def test_offset_blend_grid_starts_at_v_min():
     gr_v = np.linspace(0.000, 1.000, n_gr)
     gr_q = np.linspace(0.0, 1.0, n_gr)
 
-    v_min_pre = max(gr_v.min(), blend_v.min())   # = blend_v[0] = 0.040 + 1e-5
-    v_max_pre = min(gr_v.max(), blend_v.max())   # = blend_v[-1]
+    v_min_pre = max(gr_v.min(), blend_v.min())  # = blend_v[0] = 0.040 + 1e-5
+    v_max_pre = min(gr_v.max(), blend_v.max())  # = blend_v[-1]
 
     res = generate_si_curve(
         graphite_data=(gr_v, gr_q),
@@ -113,15 +121,19 @@ def test_offset_blend_grid_starts_at_v_min():
     # is gr_v[21] = 0.042. Under the OLD behaviour, the grid would start at
     # max(0.042, blend_v[0]) = 0.042. Under the NEW behaviour, the grid
     # starts at v_min_pre = 0.040 + 1e-5.
-    n_points = max(_trimmed_len(gr_v, v_min_pre, v_max_pre),
-                   _trimmed_len(blend_v, v_min_pre, v_max_pre))
+    n_points = max(
+        _trimmed_len(gr_v, v_min_pre, v_max_pre), _trimmed_len(blend_v, v_min_pre, v_max_pre)
+    )
     step = (v_max_pre - v_min_pre) / (n_points - 1)
 
     # First retained point = v_min_pre + step (NEW behaviour: linspace starts
     # exactly at v_min_pre, the conceptual lower boundary).
-    np.testing.assert_allclose(v_common[0], v_min_pre + step, atol=1e-12,
-                               err_msg="grid should start at v_min_pre (not at the "
-                                       "first surviving post-trim sample)")
+    np.testing.assert_allclose(
+        v_common[0],
+        v_min_pre + step,
+        atol=1e-12,
+        err_msg="grid should start at v_min_pre (not at the " "first surviving post-trim sample)",
+    )
 
     # Compute what the OLD behaviour WOULD have produced and confirm it
     # differs from the new one by more than 1e-9 (so the assertion above
@@ -160,8 +172,8 @@ def test_linspace_step_is_pretrim_window_width_over_n_minus_1():
     gr_v = np.linspace(0.000, 1.300, 501)
     gr_q = np.linspace(0.0, 1.0, 501)
 
-    v_min_pre = max(gr_v.min(), blend_v.min())    # = blend_v.min() = 0.050
-    v_max_pre = min(gr_v.max(), blend_v.max())    # = blend_v.max() = 1.200
+    v_min_pre = max(gr_v.min(), blend_v.min())  # = blend_v.min() = 0.050
+    v_max_pre = min(gr_v.max(), blend_v.max())  # = blend_v.max() = 1.200
 
     res = generate_si_curve(
         graphite_data=(gr_v, gr_q),
@@ -173,15 +185,20 @@ def test_linspace_step_is_pretrim_window_width_over_n_minus_1():
     )
     v_common = np.asarray(res.voltage, dtype=float)
 
-    n_points = max(_trimmed_len(gr_v, v_min_pre, v_max_pre),
-                   _trimmed_len(blend_v, v_min_pre, v_max_pre))
+    n_points = max(
+        _trimmed_len(gr_v, v_min_pre, v_max_pre), _trimmed_len(blend_v, v_min_pre, v_max_pre)
+    )
     expected_step = (v_max_pre - v_min_pre) / (n_points - 1)
 
     # Step (from the first two retained samples) equals the pre-trim
     # window width / (n_points - 1) exactly.
     actual_step = float(v_common[1] - v_common[0])
-    np.testing.assert_allclose(actual_step, expected_step, atol=1e-12,
-                               err_msg="linspace step must be pre-trim window / (n-1)")
+    np.testing.assert_allclose(
+        actual_step,
+        expected_step,
+        atol=1e-12,
+        err_msg="linspace step must be pre-trim window / (n-1)",
+    )
 
     # First retained = v_min + 1*step, last retained = v_max.
     np.testing.assert_allclose(v_common[0], v_min_pre + expected_step, atol=1e-12)
@@ -192,8 +209,9 @@ def test_linspace_step_is_pretrim_window_width_over_n_minus_1():
     # is narrower and old_step != expected_step on this input).
     gr_post_trim_min = gr_v[(gr_v >= v_min_pre) & (gr_v <= v_max_pre)].min()
     gr_post_trim_max = gr_v[(gr_v >= v_min_pre) & (gr_v <= v_max_pre)].max()
-    old_step = (min(gr_post_trim_max, blend_v.max()) -
-                max(gr_post_trim_min, blend_v.min())) / (n_points - 1)
-    assert abs(old_step - expected_step) > 1e-9, (
-        f"degenerate input: old/new step coincide ({old_step} vs {expected_step})"
+    old_step = (min(gr_post_trim_max, blend_v.max()) - max(gr_post_trim_min, blend_v.min())) / (
+        n_points - 1
     )
+    assert (
+        abs(old_step - expected_step) > 1e-9
+    ), f"degenerate input: old/new step coincide ({old_step} vs {expected_step})"

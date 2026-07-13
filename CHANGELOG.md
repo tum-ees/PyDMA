@@ -5,6 +5,24 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.1] - 2026-07-13
+
+### Added
+
+* Added `CITATION.cff` metadata for software citation and Zenodo ingestion.
+* Added GitLab and GitHub CI definitions for formatting, linting, typing,
+  tests, scientific regression checks, and package builds.
+
+### Changed
+
+* Applied the repository's pinned Black and isort formatting consistently.
+* Aligned development dependencies and pre-commit hooks with the documented
+  release gates.
+* Clarified the bundled P45B test-data citation and removed
+  workstation-specific notebook output.
+* Updated type annotations for current NumPy and Matplotlib typing without
+  changing runtime behavior.
+
 ## [1.1.0] - 2026-05-23
 
 ### Changed

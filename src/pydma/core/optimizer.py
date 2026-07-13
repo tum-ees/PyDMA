@@ -11,13 +11,13 @@ the evolutionary algorithm explore the complex, multi-modal parameter space.
 """
 
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from collections.abc import Callable
 import numpy as np
 from numpy.typing import NDArray
-from scipy.optimize import differential_evolution, OptimizeResult
+from scipy.optimize import OptimizeResult, differential_evolution
 
 from pydma.utils.dma_config import DMAConfig
 
@@ -199,6 +199,7 @@ class DMAOptimizer:
         callback_wrapper = None
         if self.callback is not None:
             user_callback = self.callback  # local binding for mypy narrowing
+
             def callback_wrapper(xk: NDArray, convergence: float) -> bool:
                 user_callback(xk, convergence)
                 return False  # Don't stop early

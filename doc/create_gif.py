@@ -20,7 +20,6 @@ from PIL import Image
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
 if str(SRC_DIR) not in sys.path:
@@ -34,7 +33,6 @@ from pydma import (  # noqa: E402
     load_ocp,
     plot_ocv_model_param_show,
 )
-
 
 FIGSIZE_CM = (13.0, 12.0)  # Match getting_started OCV+DVA figure geometry
 FRAME_DPI = 200
@@ -70,7 +68,9 @@ def _load_blend_electrodes(input_data_dir: Path) -> tuple[BlendElectrode, Electr
         input_data_dir / "Silicon" / "SiReconstr_Lithiation_Rehm2026_P45B_Anode_0C03.csv"
     )
     cathode = load_ocp(
-        input_data_dir / "NCA" / "GITT_P45b_Cat_NCA_JN_VS_Coin_1_GITT__Extracted_Continuous_pOCP.csv",
+        input_data_dir
+        / "NCA"
+        / "GITT_P45b_Cat_NCA_JN_VS_Coin_1_GITT__Extracted_Continuous_pOCP.csv",
         electrode_type="cathode",
         smooth=False,
     )
@@ -93,7 +93,9 @@ def _load_blend_electrodes(input_data_dir: Path) -> tuple[BlendElectrode, Electr
     return si_gr_anode, cathode
 
 
-def _load_all_pocv_entries(testdata_dir: Path) -> list[tuple[int, Path, np.ndarray, np.ndarray, float | None]]:
+def _load_all_pocv_entries(
+    testdata_dir: Path,
+) -> list[tuple[int, Path, np.ndarray, np.ndarray, float | None]]:
     expected = [testdata_dir / f"FR23_pOCV_CH_entry{i:02d}.csv" for i in range(1, 10)]
     missing = [p.name for p in expected if not p.exists()]
     if missing:
@@ -160,7 +162,9 @@ def _progress_callback(accepted: int, rejected: int, total: int) -> None:
     )
 
 
-def _compute_shared_limits(results: list, label_cfg: dict[str, str]) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+def _compute_shared_limits(
+    results: list, label_cfg: dict[str, str]
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
     x_mins: list[float] = []
     x_maxs: list[float] = []
     ocv_y_mins: list[float] = []
@@ -354,8 +358,7 @@ def main() -> None:
     print("Computing shared axis limits across all CUs...", flush=True)
     shared_xlim, shared_ocv_ylim, shared_dva_ylim = _compute_shared_limits(results, label_cfg)
     print(
-        "  Shared limits "
-        f"x={shared_xlim}, ocv_y={shared_ocv_ylim}, dva_y={shared_dva_ylim}",
+        "  Shared limits " f"x={shared_xlim}, ocv_y={shared_ocv_ylim}, dva_y={shared_dva_ylim}",
         flush=True,
     )
 

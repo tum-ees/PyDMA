@@ -7,6 +7,7 @@ of two component materials.
 """
 
 from dataclasses import dataclass, field
+
 import numpy as np
 from scipy.interpolate import interp1d
 
@@ -56,9 +57,7 @@ class BlendElectrode:
     def __post_init__(self):
         """Prepare blend electrode data after initialization."""
         if self.blend1.electrode_type != self.blend2.electrode_type:
-            raise ValueError(
-                "blend1 and blend2 must have the same electrode_type"
-            )
+            raise ValueError("blend1 and blend2 must have the same electrode_type")
 
         self.electrode_type = self.blend1.electrode_type
 
@@ -189,7 +188,7 @@ class BlendElectrode:
         # Interpolate voltage onto uniform SOC grid
         # MATLAB uses interp1(Q_sorted, V_sorted, blendSOC, 'linear', 'extrap')
         # so we use linear extrapolation at edges (not clamping)
-        f = interp1d(q_sorted, v_sorted, kind='linear', fill_value='extrapolate')
+        f = interp1d(q_sorted, v_sorted, kind="linear", fill_value="extrapolate")
         blend_voltage = f(blend_soc)
 
         return blend_soc, blend_voltage
@@ -257,8 +256,7 @@ class BlendElectrode:
             "voltage": voltage,
             "blend1_stoichiometry": q1_of_v(voltage),
             "blend2_stoichiometry": q2_of_v(voltage),
-            "raw_blend_capacity": gamma * q2_of_v(voltage)
-            + (1 - gamma) * q1_of_v(voltage),
+            "raw_blend_capacity": gamma * q2_of_v(voltage) + (1 - gamma) * q1_of_v(voltage),
             "raw_blend_min": np.asarray(q_min),
             "raw_blend_max": np.asarray(q_max),
         }

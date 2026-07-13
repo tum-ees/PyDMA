@@ -207,6 +207,14 @@ See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
+**1.1.1 highlights:**
+
+- Added `CITATION.cff` metadata for software citation and Zenodo archiving.
+- Added reproducible formatting, linting, typing, test, and package-build
+  checks for the GitLab source repository and public GitHub mirror.
+- Improved release documentation and P45B test-data citation guidance. No
+  scientific algorithms or public APIs changed.
+
 **1.1.0 highlights:**
 
 - **New PyBaMM-safe silicon OCP filter:**

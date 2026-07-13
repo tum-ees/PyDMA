@@ -4,6 +4,7 @@ This script is one-shot. It is NOT a test, just a helper to generate the
 golden JSON. Run it whenever you intentionally want to refresh the
 reference values, then commit the updated tests/golden/p45b_*.json.
 """
+
 import json
 import sys
 from pathlib import Path

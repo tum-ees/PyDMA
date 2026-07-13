@@ -1,0 +1,44 @@
+stages:
+  - verify
+  - build
+
+default:
+  before_script:
+    - python -m pip install --upgrade pip
+
+quality:
+  stage: verify
+  image: python:3.14
+  script:
+    - python -m pip install -e ".[dev]"
+    - python -m black --check src tests doc
+    - python -m isort --check-only src tests doc
+    - python -m ruff check src tests doc
+    - python -m mypy src/pydma
+
+tests-minimum:
+  stage: verify
+  image: python:3.12
+  script:
+    - python -m pip install numpy==1.26.0 scipy==1.11.4 pandas==2.1.1 matplotlib==3.8.0 statsmodels==0.14.0
+    - python -m pip install -e ".[dev]"
+    - python -m pytest --override-ini="addopts=" -q -m "not scientific"
+    - python -m pytest --override-ini="addopts=" -q -m scientific
+
+tests-latest:
+  stage: verify
+  image: python:3.14
+  script:
+    - python -m pip install -e ".[dev]"
+    - python -m pytest --override-ini="addopts=" -q -m "not scientific"
+
+package-build:
+  stage: build
+  image: python:3.14
+  script:
+    - python -m pip install -e ".[dev]"
+    - python -m build
+    - python -m twine check dist/*
+  artifacts:
+    paths:
+      - dist/

@@ -8,9 +8,9 @@ The inhomogeneity model represents non-uniform SOC distribution across
 the electrode, which causes voltage averaging effects.
 """
 
-import numpy as np
 from functools import lru_cache
 
+import numpy as np
 
 # Fixed parameters for inhomogeneity model
 # DIFFERENCE FROM MATLAB: These values are fixed as specified in requirements
@@ -47,7 +47,7 @@ def _get_inhomogeneity_weights(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     mu = 1.0
 
     z = (x - mu) / sigma
-    weights = np.exp(-0.5 * z ** 2)
+    weights = np.exp(-0.5 * z**2)
     weights = weights / weights.sum()  # Normalize
 
     return x, weights

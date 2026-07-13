@@ -7,7 +7,9 @@ parameters for the degradation mode analysis.
 
 from dataclasses import dataclass
 from typing import Any
+
 import numpy as np
+
 from pydma.utils.roi import ROISpec, get_roi_outer_bounds
 
 SUPPORTED_ALGORITHMS = {"differential_evolution"}
@@ -286,9 +288,7 @@ class DMAConfig:
             )
 
         if not 0.0 <= self.gamma_anode_blend2_init <= self.gamma_anode_blend2_upper:
-            raise ValueError(
-                "gamma_anode_blend2_init must be within [0, gamma_anode_blend2_upper]"
-            )
+            raise ValueError("gamma_anode_blend2_init must be within [0, gamma_anode_blend2_upper]")
 
         if not 0.0 <= self.gamma_cathode_blend2_init <= self.gamma_cathode_blend2_upper:
             raise ValueError(
