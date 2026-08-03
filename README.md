@@ -212,6 +212,22 @@ See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
+**1.1.2 highlights:**
+
+- **Fixed a silent loss of voltage support in the opt-in plateau collapse:**
+  `generate_si_curve(collapse_plateaus=True)` could return a capacity axis
+  carrying exact ties, which a downstream deduplication then dropped together
+  with the corresponding voltages. The tie-breaking shift is now bounded by a
+  quarter of the distance to the neighbouring plateau levels, a plateau on the
+  range boundary is shifted inward only, and the output is no longer clamped
+  back into the range.
+- **Strict monotonicity is now a guarantee, not a repair:** the collapsed
+  capacity is tie-free and inside the input range by construction, and both
+  properties are enforced with real exceptions so they survive `python -O`.
+- The default path is untouched. `collapse_plateaus` still defaults to `False`,
+  `pchip_resample_for_pybamm` is numerically unchanged, and silicon OCP tables
+  exported through the default pipeline reproduce bit-for-bit.
+
 **1.1.1 highlights:**
 
 - Added `CITATION.cff` metadata for software citation and Zenodo archiving.

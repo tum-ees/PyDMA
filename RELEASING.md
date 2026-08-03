@@ -75,6 +75,10 @@ python -m mypy src/pydma
 # Lint
 python -m ruff check src tests doc
 
+# Formatting (same pins CI enforces; a reformat here is a real gate failure)
+python -m black --check src tests doc
+python -m isort --check-only src tests doc
+
 # Tutorial sanity-check (manual): open and run BOTH tutorial notebooks
 # end-to-end on the release branch, then commit their refreshed outputs:
 #
