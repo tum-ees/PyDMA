@@ -43,6 +43,19 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   resample. Where the plateau levels are well separated the new code reproduces
   the previous arithmetic exactly.
 
+* Pinned the `ruff` development dependency to `>=0.15.21,<0.16`, the version the
+  pre-commit hook already used. The previous floating floor let a fresh
+  environment resolve to ruff 0.16.1, whose wider default rule set reports 33
+  findings on the untouched code base and so turned the lint gate red
+  independently of any change. Only one of those findings is a mechanical
+  cleanup. The rest ask for narrowing the deliberate blanket exception handlers
+  that keep the optimizer objectives from crashing a fit, changing a raised
+  exception type, restructuring nested numerical guards, rewrapping f-strings
+  that the formatter produced, and sorting the public `__all__` listings, and
+  their import ordering assumes a line length of 88 where this project
+  configures 100 for black and isort. Moving to ruff 0.16 is therefore its own
+  piece of work rather than part of this release.
+
 ### Fixed
 
 * `generate_si_curve(collapse_plateaus=True)` no longer loses part of the voltage
