@@ -14,8 +14,8 @@ _pav_isotonic    Pool-Adjacent-Violators isotonic regression. Front-line
                  monotone filter. Used internally by ``generate_si_curve``.
 
 _collapse_plateaus
-                 Drop PAV plateau interiors and eps-shift the endpoints to
-                 get strict sto. Internal helper, opt-in via
+                 Drop PAV plateau interiors and separate the endpoints by a
+                 bounded shift to get strict sto. Internal helper, opt-in via
                  ``generate_si_curve(collapse_plateaus=True)``.
 
 pchip_resample_for_pybamm
@@ -82,13 +82,28 @@ def _pav_isotonic(
     return result
 
 
+def _ulp(value: float) -> float:
+    """One unit in the last place of ``value``'s magnitude, always positive.
+
+    ``np.spacing`` returns a NEGATIVE step for a negative argument. The
+    internal sign flip in :func:`_collapse_plateaus` that lets a falling
+    curve share the rising code path makes every working value negative
+    there, so measuring the spacing of the raw value would point the ulp
+    comparisons and the repair sweep in the wrong direction. Measuring on
+    the magnitude keeps the step positive in both directions and matches
+    MATLAB's ``eps(x)``, which is likewise defined on ``abs(x)``.
+    """
+    return float(np.spacing(abs(float(value))))
+
+
 def _collapse_plateaus(
     voltage: NDArray[np.floating],
     capacity: NDArray[np.floating],
     eps: float | None = None,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Replace plateaus in ``capacity`` (runs of equal values) with their two
-    voltage endpoints, shifted by ±eps so the result is strictly monotonic.
+    voltage endpoints, separated by a bounded shift so the result is strictly
+    monotonic.
 
     PAV (isotonic regression) pools violating points to a common mean, which
     yields runs of identical capacity. The resulting (capacity, voltage)
@@ -96,14 +111,38 @@ def _collapse_plateaus(
     map to the same SOC. Downstream code that interpolates SOC -> voltage
     needs a strictly monotone capacity axis.
 
-    For each run of length L >= 2 at value q:
-      - keep only the first and last index of the run (drop interior),
-      - set their capacity values to ``q - eps`` and ``q + eps`` (or reversed
-        for a non-increasing curve), clamped to the original [min, max] so
-        the output never extends past the input range.
+    For each run of length L >= 2 at level q:
 
-    Linear interpolation across the original plateau range is preserved within
-    eps, so voltage -> capacity consumers see essentially the same curve.
+    - keep only the first and last index of the run (drop the interior),
+    - move the two kept samples to ``q - s`` and ``q + s`` (reversed for a
+      non-increasing curve).
+
+    Samples that are not part of a plateau keep their exact capacity, so linear
+    interpolation across the original plateau range is preserved to within
+    ``s`` and voltage -> capacity consumers see essentially the same curve.
+
+    The shift ``s`` is bounded twice, and both bounds are what keeps the output
+    strictly monotone:
+
+    - ``s <= eps``, the global tie-breaking scale, and
+    - ``s <=`` a quarter of the distance to the neighbouring plateau levels, so
+      the shifted endpoints of two adjacent runs can never meet, however close
+      the two levels are.
+
+    Levels closer than eight floating-point ulps of their magnitude are pooled
+    into a single run before the shift is computed. At that distance a quarter
+    of the gap is no longer representable, so the shifted endpoint would round
+    straight back onto its own level and the pair would tie again. Levels that
+    close are the same level at machine precision, so the merged run keeps the
+    first and the last sample of the whole group.
+
+    A run that sits exactly on the boundary of the capacity range is shifted
+    INWARD only: the boundary sample keeps its exact value and its partner
+    moves into the range. The output therefore stays inside the input range by
+    construction and is never clamped back. Clamping was the origin of a silent
+    data loss: it pushed shifted samples back onto the boundary value,
+    re-created exact ties there, and let a downstream deduplication drop the
+    tied samples together with their voltage support.
 
     Parameters
     ----------
@@ -112,79 +151,157 @@ def _collapse_plateaus(
     capacity : NDArray
         Monotone (post-PAV) capacity values, possibly with plateaus.
     eps : float, optional
-        Tie-breaking shift. If ``None``, chosen automatically as 1e-5 of the
-        capacity range. Robust under cubic-spline interpolation downstream
-        while still being numerically tiny.
+        Upper bound on the tie-breaking shift. If ``None``, chosen
+        automatically as 1e-5 of the capacity range. Robust under cubic-spline
+        interpolation downstream while still being numerically tiny. The
+        per-run quarter-gap bound applies on top of it.
 
     Returns
     -------
     tuple[NDArray, NDArray]
-        Strictly monotone (voltage, capacity) with plateaus collapsed.
+        Strictly monotone (voltage, capacity) with plateaus collapsed. Free of
+        ties by construction, so a consumer never has to deduplicate.
+
+    Raises
+    ------
+    ValueError
+        If ``voltage`` and ``capacity`` do not hold the same number of
+        samples, or if the snapped capacity curve is constant so there is no
+        non-degenerate range to collapse onto.
+    RuntimeError
+        If the constructed output is not strictly monotone, or if it left the
+        range of the snapped input curve. Both properties hold by construction,
+        so either exception signals a defect in this function rather than an
+        unusable input. Raised rather than asserted so the guarantees survive
+        ``python -O``.
     """
-    n = len(capacity)
+    v_in: NDArray[np.float64] = np.asarray(voltage, dtype=np.float64).ravel()
+    q_in: NDArray[np.float64] = np.asarray(capacity, dtype=np.float64).ravel()
+    if v_in.shape != q_in.shape:
+        raise ValueError(
+            f"voltage and capacity must hold the same number of samples; got "
+            f"{v_in.shape} vs {q_in.shape}."
+        )
+    n = int(q_in.size)
     if n < 2:
         return voltage, capacity
 
-    direction = 1 if capacity[-1] >= capacity[0] else -1
-
-    q_min = float(capacity.min())
-    q_max = float(capacity.max())
-    q_range = q_max - q_min
-
-    if eps is None:
-        eps = q_range * 1e-5 if q_range > 0 else 1e-9
-    eps = max(float(eps), np.finfo(np.float64).eps)
+    direction = 1 if q_in[-1] >= q_in[0] else -1
 
     # PAV-pooled means can drift in floating point so adjacent buckets that
-    # should have merged end up slightly violating monotonicity. Cumulative
-    # min/max snap forces (non-)monotonicity exactly so plateau detection
-    # below works on a clean signal.
-    q_arr = capacity.astype(np.float64)
-    q_clean = np.maximum.accumulate(q_arr) if direction > 0 else np.minimum.accumulate(q_arr)
+    # should have merged end up slightly violating monotonicity. The cumulative
+    # min/max snap forces (non-)monotonicity exactly, so the plateau detection
+    # below works on a clean signal. Flipping the sign for a falling curve lets
+    # both directions share one code path: q_work is non-decreasing, and the
+    # mirrored result is flipped back at the end.
+    q_work: NDArray[np.float64] = (
+        np.maximum.accumulate(q_in) if direction > 0 else -np.minimum.accumulate(q_in)
+    )
+    q_work_min = float(q_work[0])
+    q_work_max = float(q_work[-1])
+    if q_work_max <= q_work_min:
+        raise ValueError(
+            f"Collapsing plateaus requires a non-degenerate capacity range, but the "
+            f"snapped curve is constant at q = {direction * q_work_min!r}."
+        )
 
-    # Mark interior of plateaus for removal
-    keep = np.ones(n, dtype=bool)
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and q_clean[j + 1] == q_clean[i]:
-            j += 1
-        if j > i + 1:
-            keep[i + 1 : j] = False
-        i = j + 1
+    q_range = float(q_in.max() - q_in.min())
+    eps_shift = q_range * 1e-5 if eps is None else float(eps)
+    eps_shift = max(eps_shift, float(np.finfo(np.float64).eps))
 
-    v_out = voltage[keep].copy()
-    q_out = q_clean[keep].astype(np.float64, copy=True)
+    # Runs of equal capacity. Their levels are strictly increasing.
+    starts: NDArray[np.intp] = np.concatenate(
+        (np.zeros(1, dtype=np.intp), np.flatnonzero(np.diff(q_work) > 0) + 1)
+    )
+    ends: NDArray[np.intp] = np.concatenate((starts[1:] - 1, np.array([n - 1], dtype=np.intp)))
+    levels: NDArray[np.float64] = q_work[starts].astype(np.float64, copy=True)
 
-    # Break remaining adjacent ties by shifting endpoints in the monotone
-    # direction; clamp to the original range so the output never extends
-    # past [q_min, q_max].
-    m = len(q_out)
-    k = 0
-    while k < m - 1:
-        if q_out[k] == q_out[k + 1]:
-            q_out[k] = max(q_min, min(q_max, q_out[k] - direction * eps))
-            q_out[k + 1] = max(q_min, min(q_max, q_out[k + 1] + direction * eps))
-            k += 2
+    # Pool levels that are numerically indistinguishable, so every surviving
+    # gap is wide enough for a representable quarter-gap shift. Requiring eight
+    # ulps keeps each shifted endpoint at least two ulps away from its own
+    # level under round-to-nearest, on both sides of the run.
+    keep_run: NDArray[np.bool_] = np.ones(levels.size, dtype=bool)
+    reference = float(levels[0])
+    for r in range(1, int(levels.size)):
+        level_r = float(levels[r])
+        if level_r - reference <= 8.0 * max(_ulp(level_r), _ulp(reference)):
+            keep_run[r] = False
         else:
-            k += 1
+            reference = level_r
+    if not bool(keep_run.all()):
+        kept: NDArray[np.intp] = np.flatnonzero(keep_run)
+        merged_ends: NDArray[np.intp] = np.empty(kept.size, dtype=np.intp)
+        merged_ends[:-1] = ends[kept[1:] - 1]
+        merged_ends[-1] = ends[-1]
+        merged_levels: NDArray[np.float64] = levels[kept].astype(np.float64, copy=True)
+        # The first group starts at the lower end of the range anyway. The last
+        # group is represented by the upper end instead of by its own first
+        # level, so both boundary values stay exact and the inward-only shift
+        # below still recognises them.
+        merged_levels[-1] = levels[-1]
+        starts = starts[kept]
+        ends = merged_ends
+        levels = merged_levels
+    n_runs = int(levels.size)
 
-    # Final enforcement: forward sweep adds a tiny correction wherever the
-    # shift step (combined with clamping at the boundary) left adjacent
-    # values weakly ordered. Guarantees strict monotonicity for downstream
-    # cubic-spline interpolators without re-arranging the curve shape.
-    min_step = max(eps * 0.1, np.finfo(np.float64).eps)
-    if direction > 0:
-        for k in range(1, m):
-            if q_out[k] <= q_out[k - 1]:
-                q_out[k] = q_out[k - 1] + min_step
-    else:
-        for k in range(1, m):
-            if q_out[k] >= q_out[k - 1]:
-                q_out[k] = q_out[k - 1] - min_step
-    q_out = np.clip(q_out, q_min, q_max)
+    # Shift budget per run: the global scale, capped at a quarter of the
+    # distance to either neighbouring level.
+    shift: NDArray[np.float64] = np.full(n_runs, eps_shift, dtype=np.float64)
+    if n_runs > 1:
+        gaps: NDArray[np.float64] = np.diff(levels)
+        shift[:-1] = np.minimum(shift[:-1], 0.25 * gaps)
+        shift[1:] = np.minimum(shift[1:], 0.25 * gaps)
 
-    return v_out, q_out
+    # Keep the first and the last sample of every run and separate them.
+    v_out: NDArray[np.float64] = np.empty(2 * n_runs, dtype=np.float64)
+    q_out: NDArray[np.float64] = np.empty(2 * n_runs, dtype=np.float64)
+    p = 0
+    for r in range(n_runs):
+        level = float(levels[r])
+        s = float(shift[r])
+        v_out[p] = v_in[starts[r]]
+        if ends[r] == starts[r]:
+            q_out[p] = level  # isolated sample: keep it untouched
+            p += 1
+            continue
+        q_out[p] = level if level == q_work_min else level - s
+        p += 1
+        v_out[p] = v_in[ends[r]]
+        q_out[p] = level if level == q_work_max else level + s
+        p += 1
+    v_out = v_out[:p]
+    q_out = q_out[:p]
+
+    # Safety net. After the pooling above every shift is representable and
+    # neighbouring output values differ by at least two ulps, so this sweep is
+    # not expected to change anything. It steps by a single ulp and the result
+    # is not clamped back into the range: a clamp would re-create exactly the
+    # ties this function exists to prevent.
+    for k in range(1, p):
+        if q_out[k] <= q_out[k - 1]:
+            q_out[k] = q_out[k - 1] + _ulp(float(q_out[k - 1]))
+
+    # Contract of this function, guaranteed by construction rather than
+    # repaired.
+    violations: NDArray[np.intp] = np.flatnonzero(np.diff(q_out) <= 0)
+    if violations.size:
+        i = int(violations[0])
+        raise RuntimeError(
+            f"Collapsed capacity is not strictly monotone: samples {i} and {i + 1} sit "
+            f"at q = {direction * float(q_out[i])!r} and "
+            f"{direction * float(q_out[i + 1])!r} (voltages {float(v_out[i])!r} and "
+            f"{float(v_out[i + 1])!r})."
+        )
+    if float(q_out[0]) < q_work_min or float(q_out[-1]) > q_work_max:
+        raise RuntimeError(
+            f"Collapsed capacity left the range of the input curve: endpoints "
+            f"{direction * float(q_out[0])!r} and {direction * float(q_out[-1])!r} are "
+            f"outside the snapped range bounded by {direction * q_work_min!r} and "
+            f"{direction * q_work_max!r}."
+        )
+
+    q_signed: NDArray[np.float64] = q_out if direction > 0 else -q_out
+    return v_out, q_signed
 
 
 def pchip_resample_for_pybamm(
@@ -230,6 +347,23 @@ def pchip_resample_for_pybamm(
     never sees the knee as a problem because LOWESS in V-space averages
     the plateau samples to V_min ≈ 0.086 V before they reach the
     optimizer — only the downstream PyBaMM interpolant cares.
+
+    Duplicate sto handling
+    ----------------------
+    The expected input is the RAW PAV output, i.e.
+    ``generate_si_curve(monotone_filter=True, collapse_plateaus=False)``.
+    That curve carries genuine plateaus — several per cent of the samples
+    share an sto value — and the dedup in step 1 below is the intended
+    handling for them. The PCHIP interpolant needs a strictly increasing
+    abscissa, and the dropped samples sit inside a plateau whose sto extent
+    the retained points still span, while ``snap_endpoint`` restores the
+    lowest-V sample explicitly.
+
+    Output of :func:`_collapse_plateaus` is a different case: since PyDMA
+    1.1.2 that function is guaranteed tie-free, so passing its result here
+    leaves the dedup a no-op. A tie reaching this function from a collapsed
+    curve would therefore indicate a defect in :func:`_collapse_plateaus`
+    rather than a plateau to be squashed.
 
     Recipe
     ------
