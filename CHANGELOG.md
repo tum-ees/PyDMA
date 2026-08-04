@@ -27,16 +27,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * `_collapse_plateaus` states its contract with real exceptions instead of bare
   `assert`, so the guarantees survive `python -O`. Unusable input raises
   `ValueError`: a voltage and capacity pair of unequal length, a non-finite
-  voltage, capacity or `eps` value, and a capacity curve that after the monotone
-  snap is either constant or spans less than the smallest shift that fits inside
-  it. The finiteness check matters because every comparison against NaN is
-  false, so a NaN used to pass the degeneracy guard, the repair sweep and both
-  post-conditions untouched and left the caller with a silently NaN-poisoned
-  curve. A collapsed curve that is not strictly monotone, or that
-  left the range of the input curve, raises `RuntimeError`, because both
-  properties now hold by construction and a violation would mean a defect in the
-  function rather than an unusable input. The messages carry the offending sample
-  indices, capacities and voltages.
+  voltage, capacity or `eps` value, a capacity curve that after the monotone
+  snap is constant, and finite samples whose overall range overflows the
+  floating-point span. The finiteness checks matter because every comparison
+  against NaN is false, so a NaN used to pass the degeneracy guard, the repair
+  sweep and the post-conditions untouched and left the caller with a silently
+  NaN-poisoned curve. A collapsed curve that is non-finite, not strictly
+  monotone, or that does not preserve both range endpoints exactly raises
+  `RuntimeError`, because these properties now hold by construction and a
+  violation would mean a defect in the function rather than an unusable input.
+  Where samples are at fault, the messages carry the offending indices,
+  capacities and voltages.
 
 * Only the opt-in collapse path changes. `collapse_plateaus` still defaults to
   `False`, `pchip_resample_for_pybamm` is numerically untouched, and silicon OCP
@@ -72,7 +73,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   range of the input curve. This mirrors the fix shipped in the MATLAB
   DegradationModeAnalysis framework 2.1.0.
 
-* Plateau levels less than eight floating-point ulps apart are pooled into a
+* Plateau levels within eight floating-point ulps of each other are pooled into a
   single plateau instead of being shifted apart, because at that distance a
   quarter of the gap is no longer representable and the shifted endpoint rounds
   straight back onto its own level. The merged plateau keeps the first and the
