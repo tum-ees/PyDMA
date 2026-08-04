@@ -315,48 +315,72 @@ def test_non_finite_eps_raises_value_error():
         _collapse_plateaus(SEPARATED_V_UP, SEPARATED_Q_UP, eps=np.nan)
 
 
-def test_capacity_range_of_one_ulp_raises_value_error():
-    """A range about one ulp wide is degenerate one step out from constant.
+def test_small_magnitude_narrow_range_is_not_rejected():
+    """Small-magnitude data must not be judged against an absolute threshold.
 
-    All levels pool into a single run and the machine-epsilon shift floor is
-    then wider than the range itself, so the inward shift would step past the
-    lower bound. Before this check that surfaced as a RuntimeError, which
-    claimed a defect in the collapse rather than naming the unusable input.
+    This range is 1e-16 wide, which is billions of ulps at a magnitude of 1e-10
+    and perfectly resolvable. An absolute machine-epsilon span guard rejected it
+    as degenerate, because 1e-16 is smaller than 2.22e-16 in absolute terms
+    while being enormous in local ulps.
     """
-    nxt = np.nextafter(0.5, 1.0)
-    with pytest.raises(ValueError, match="wider than the smallest"):
-        _collapse_plateaus(np.array([0.40, 0.38, 0.30, 0.28]), np.array([0.5, 0.5, nxt, nxt]))
-    with pytest.raises(ValueError, match="wider than the smallest"):
-        _collapse_plateaus(np.array([0.40, 0.30]), np.array([0.5, nxt]))
+    lo, hi = 1e-10, 1.000001e-10
+    assert (hi - lo) / float(np.spacing(lo)) > 1e9, "test input is not actually resolvable"
+    v = np.array([0.40, 0.38, 0.30, 0.28])
+    q = np.array([lo, lo, hi, hi])
+
+    v_out, q_out = _collapse_plateaus(v, q)
+
+    assert np.all(np.diff(q_out) > 0.0)
+    assert float(q_out[0]) == lo
+    assert float(q_out[-1]) == hi
+    assert float(v_out[0]) == float(v[0])
+    assert float(v_out[-1]) == float(v[-1])
+
+
+def test_overflowing_capacity_range_raises_value_error():
+    """Every sample finite, yet their range is not.
+
+    Before this check the overflowing range poisoned every derived shift and the
+    function returned [-1e308, inf, nan, 1e308] without a word, because a NaN
+    makes the monotonicity comparison false and so slipped past the
+    post-conditions.
+    """
+    q = np.array([-1e308, -1e308, 1e308, 1e308])
+    assert bool(np.all(np.isfinite(q))), "input samples must themselves be finite"
+    with np.errstate(over="ignore"):
+        assert not np.isfinite(q.max() - q.min()), "test input must overflow its range"
+
+    with pytest.raises(ValueError, match="capacity range overflows"):
+        _collapse_plateaus(np.array([0.40, 0.38, 0.30, 0.28]), q)
 
 
 def _ulp_steps(base, k):
-    """``base`` advanced by ``k`` representable steps toward 1.0."""
+    """``base`` advanced by ``k`` representable steps upward.
+
+    Stepping toward ``+inf`` rather than toward a fixed value keeps this correct
+    for bases on either side of 1.0.
+    """
     out = base
     for _ in range(k):
-        out = np.nextafter(out, 1.0)
+        out = np.nextafter(out, np.inf)
     return float(out)
 
 
-# At base 0.5 one ulp is 1.11e-16 and the machine-epsilon shift floor is
-# 2.22e-16, i.e. two ulps, so spans of 1 and 2 ulps are rejected as unusable and
-# spans of 3 ulps and up must round-trip their exact range edges.
-_ULP_SPANS_REJECTED = [1, 2]
-_ULP_SPANS_COLLAPSED = [3, 4, 5, 6, 7, 8]
-
-
-@pytest.mark.parametrize("k", _ULP_SPANS_REJECTED + _ULP_SPANS_COLLAPSED)
+@pytest.mark.parametrize("k", [1, 2, 3, 4, 5, 6, 7, 8])
+@pytest.mark.parametrize("base", [0.5, 1.0, 2.0], ids=["base0.5", "base1.0", "base2.0"])
 @pytest.mark.parametrize("rising", [True, False], ids=["rising", "falling"])
-def test_few_ulp_capacity_range_keeps_both_exact_edges(k, rising):
-    """A range a few ulps wide pools into a single run, and that run must still
-    report both exact range edges.
+def test_few_ulp_capacity_range_keeps_both_exact_edges(k, base, rising):
+    """A range of one to eight ulps pools into a single run, and that run must
+    report both exact range edges. Every span in this matrix is valid input.
 
-    Before the single-run case was handled explicitly, the pooled level sat at
-    the upper end of the range, so the ``level == q_work_min`` branch never
-    fired and the opposite edge was shifted off its exact value and silently
-    lost: rising curves lost their minimum, falling curves lost their maximum.
+    Two separate defects lived here. The pooled level sits at the upper end of
+    the range, so the ``level == q_work_min`` branch never fired and the
+    opposite edge was shifted off its exact value and silently lost: rising
+    curves lost their minimum, falling curves lost their maximum. Separately, an
+    absolute machine-epsilon span guard rejected the narrowest of these ranges
+    outright, before the single-run mapping could handle them correctly.
     """
-    lo = 0.5
+    lo = base
     hi = _ulp_steps(lo, k)
     if rising:
         v = np.array([0.40, 0.38, 0.30, 0.28])
@@ -364,11 +388,6 @@ def test_few_ulp_capacity_range_keeps_both_exact_edges(k, rising):
     else:
         v = np.array([0.28, 0.30, 0.38, 0.40])
         q = np.array([hi, hi, lo, lo])
-
-    if k in _ULP_SPANS_REJECTED:
-        with pytest.raises(ValueError, match="wider than the smallest"):
-            _collapse_plateaus(v, q)
-        return
 
     v_out, q_out = _collapse_plateaus(v, q)
 

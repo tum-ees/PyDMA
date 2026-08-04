@@ -166,16 +166,17 @@ def _collapse_plateaus(
     ------
     ValueError
         If ``voltage`` and ``capacity`` do not hold the same number of
-        samples, if any voltage, capacity or ``eps`` value is not finite, or
-        if the snapped capacity curve is constant or spans less than the
-        smallest shift that can be placed inside it, so there is no usable
-        range to collapse onto.
+        samples, if any voltage, capacity or ``eps`` value is not finite, if
+        the capacity range overflows although the samples themselves are
+        finite, or if the snapped capacity curve is constant so there is no
+        range to collapse onto. A range that is merely narrow, down to a
+        single ulp, is valid and maps onto its two exact edges.
     RuntimeError
-        If the constructed output is not strictly monotone, or if it left the
-        range of the snapped input curve. Both properties hold by construction,
-        so either exception signals a defect in this function rather than an
-        unusable input. Raised rather than asserted so the guarantees survive
-        ``python -O``.
+        If the constructed output is not finite, is not strictly monotone, or
+        does not start and end exactly on the two edges of the snapped input
+        range. All three hold by construction, so any of these signals a defect
+        in this function rather than an unusable input. Raised rather than
+        asserted so the guarantees survive ``python -O``.
     """
     v_in: NDArray[np.float64] = np.asarray(voltage, dtype=np.float64).ravel()
     q_in: NDArray[np.float64] = np.asarray(capacity, dtype=np.float64).ravel()
@@ -226,25 +227,25 @@ def _collapse_plateaus(
             f"Collapsing plateaus requires a non-degenerate capacity range, but the "
             f"snapped curve is constant at q = {direction * q_work_min!r}."
         )
-    # A curve whose whole range is about one ulp wide is degenerate in the same
-    # way, one step out. Every level pools into a single run, and the smallest
-    # shift the collapse can place is the machine-epsilon floor below, which is
-    # then wider than the range itself, so the inward shift would step past the
-    # lower bound. That is bad input, not a defect, so it belongs here and not
-    # in the post-conditions.
-    q_work_span = q_work_max - q_work_min
-    min_span = max(float(np.finfo(np.float64).eps), _ulp(q_work_min), _ulp(q_work_max))
-    if q_work_span <= min_span:
-        raise ValueError(
-            f"Collapsing plateaus requires a capacity range wider than the smallest "
-            f"shift that fits inside it, but the snapped curve spans only "
-            f"{q_work_span!r} between q = {direction * q_work_min!r} and "
-            f"q = {direction * q_work_max!r} (minimum {min_span!r})."
-        )
+    # A constant curve is the only degeneracy that has to be rejected. A range
+    # that is merely narrow, even down to a single ulp, is handled by the
+    # single-run case below, which maps it onto its two exact edges.
 
-    q_range = float(q_in.max() - q_in.min())
+    # Samples can each be finite while their range is not, which would poison
+    # every shift derived from it. The overflow is a condition this function
+    # reports itself, so it does not also need to warn about it.
+    with np.errstate(over="ignore"):
+        q_range = float(q_in.max() - q_in.min())
+    if not np.isfinite(q_range):
+        raise ValueError(
+            f"capacity range overflows to {q_range!r}; the samples are finite but "
+            f"span more than the floating-point range, from q = {float(q_in.min())!r} "
+            f"to q = {float(q_in.max())!r}."
+        )
     eps_shift = q_range * 1e-5 if eps is None else float(eps)
     eps_shift = max(eps_shift, float(np.finfo(np.float64).eps))
+    if not np.isfinite(eps_shift):
+        raise ValueError(f"tie-breaking shift must be finite; got {eps_shift!r}.")
 
     # Runs of equal capacity. Their levels are strictly increasing.
     starts: NDArray[np.intp] = np.concatenate(
@@ -281,29 +282,46 @@ def _collapse_plateaus(
         levels = merged_levels
     n_runs = int(levels.size)
 
-    # When the whole capacity range is only a few ulps wide, the pooling above
-    # merges every level into a single run. There is then no neighbouring level
-    # to shift against, and the merged level sits at the upper end of the range
-    # by construction, so the inward-only rule below would keep that end exact
-    # and shift the other one off its own value, silently losing the opposite
-    # capacity edge. Emit the two range edges directly instead, which is what
-    # the boundary rule is trying to achieve in the first place. A single run
-    # can only arise from pooling here, because a curve that was one run to
-    # begin with is constant and was already rejected above.
+    v_out: NDArray[np.float64]
+    q_out: NDArray[np.float64]
+
     if n_runs == 1:
-        v_edges: NDArray[np.float64] = np.array([v_in[starts[0]], v_in[ends[0]]], dtype=np.float64)
-        q_edges: NDArray[np.float64] = np.array([q_work_min, q_work_max], dtype=np.float64)
-        if direction < 0:
-            q_edges = -q_edges
-        return v_edges, q_edges
+        # When the whole capacity range is only a few ulps wide, the pooling
+        # above merges every level into a single run. There is then no
+        # neighbouring level to shift against, and the merged level sits at the
+        # upper end of the range by construction, so the inward-only rule would
+        # keep that end exact and shift the other one off its own value,
+        # silently losing the opposite capacity edge. Emit the two range edges
+        # directly instead, which is what the boundary rule is trying to achieve
+        # in the first place. A single run can only arise from pooling here,
+        # because a curve that was one run to begin with is constant and was
+        # already rejected above.
+        v_out = np.array([v_in[starts[0]], v_in[ends[0]]], dtype=np.float64)
+        q_out = np.array([q_work_min, q_work_max], dtype=np.float64)
+        p = 2
+    else:
+        v_out, q_out, p = _shift_runs(v_in, starts, ends, levels, eps_shift, q_work_min, q_work_max)
+    return _finish(v_out, q_out, p, direction, q_work_min, q_work_max)
+
+
+def _shift_runs(
+    v_in: NDArray[np.float64],
+    starts: NDArray[np.intp],
+    ends: NDArray[np.intp],
+    levels: NDArray[np.float64],
+    eps_shift: float,
+    q_work_min: float,
+    q_work_max: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], int]:
+    """Emit both endpoints of every run, separated by the bounded shift."""
+    n_runs = int(levels.size)
 
     # Shift budget per run: the global scale, capped at a quarter of the
     # distance to either neighbouring level.
     shift: NDArray[np.float64] = np.full(n_runs, eps_shift, dtype=np.float64)
-    if n_runs > 1:
-        gaps: NDArray[np.float64] = np.diff(levels)
-        shift[:-1] = np.minimum(shift[:-1], 0.25 * gaps)
-        shift[1:] = np.minimum(shift[1:], 0.25 * gaps)
+    gaps: NDArray[np.float64] = np.diff(levels)
+    shift[:-1] = np.minimum(shift[:-1], 0.25 * gaps)
+    shift[1:] = np.minimum(shift[1:], 0.25 * gaps)
 
     # Keep the first and the last sample of every run and separate them.
     v_out: NDArray[np.float64] = np.empty(2 * n_runs, dtype=np.float64)
@@ -334,8 +352,38 @@ def _collapse_plateaus(
         if q_out[k] <= q_out[k - 1]:
             q_out[k] = q_out[k - 1] + _ulp(float(q_out[k - 1]))
 
-    # Contract of this function, guaranteed by construction rather than
-    # repaired.
+    return v_out, q_out, p
+
+
+def _finish(
+    v_out: NDArray[np.float64],
+    q_out: NDArray[np.float64],
+    p: int,
+    direction: int,
+    q_work_min: float,
+    q_work_max: float,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Enforce the collapse contract and restore the original sign.
+
+    The contract holds by construction rather than by repair, so every check
+    here signals a defect in the collapse rather than an unusable input.
+
+    The endpoint equalities are the strongest part. The first run's level is
+    always ``q_work_min`` and the last run's level is always ``q_work_max``, and
+    each is emitted either as an untouched singleton or through the inward-only
+    boundary rule, so both range edges have to survive exactly. An endpoint that
+    merely lands somewhere inside the range means a boundary sample was shifted
+    off its own value and that edge was silently lost, which is precisely the
+    failure mode that a containment check cannot see.
+    """
+    non_finite: NDArray[np.intp] = np.flatnonzero(~np.isfinite(q_out))
+    if non_finite.size:
+        i = int(non_finite[0])
+        raise RuntimeError(
+            f"Collapsed capacity is not finite: sample {i} is "
+            f"{direction * float(q_out[i])!r} "
+            f"({int(non_finite.size)} non-finite sample(s) in total)."
+        )
     violations: NDArray[np.intp] = np.flatnonzero(np.diff(q_out) <= 0)
     if violations.size:
         i = int(violations[0])
@@ -345,12 +393,20 @@ def _collapse_plateaus(
             f"{direction * float(q_out[i + 1])!r} (voltages {float(v_out[i])!r} and "
             f"{float(v_out[i + 1])!r})."
         )
-    if float(q_out[0]) < q_work_min or float(q_out[-1]) > q_work_max:
+    if float(q_out[0]) != q_work_min:
         raise RuntimeError(
-            f"Collapsed capacity left the range of the input curve: endpoints "
-            f"{direction * float(q_out[0])!r} and {direction * float(q_out[-1])!r} are "
-            f"outside the snapped range bounded by {direction * q_work_min!r} and "
-            f"{direction * q_work_max!r}."
+            f"Collapsed capacity does not start at the range edge: first sample is "
+            f"{direction * float(q_out[0])!r}, expected {direction * q_work_min!r}."
+        )
+    if float(q_out[-1]) != q_work_max:
+        raise RuntimeError(
+            f"Collapsed capacity does not end at the range edge: last sample is "
+            f"{direction * float(q_out[-1])!r}, expected {direction * q_work_max!r}."
+        )
+    if int(v_out.size) != p or int(q_out.size) != p:
+        raise RuntimeError(
+            f"Collapsed arrays have inconsistent lengths: {int(v_out.size)} voltages "
+            f"and {int(q_out.size)} capacities for {p} emitted samples."
         )
 
     q_signed: NDArray[np.float64] = q_out if direction > 0 else -q_out

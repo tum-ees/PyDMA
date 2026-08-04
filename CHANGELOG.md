@@ -49,7 +49,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   the previous arithmetic exactly.
 
 * Pinned the `ruff` development dependency to `>=0.15.21,<0.16`, matching the
-  version the pre-commit hook already used. The previous floating floor let a
+  Ruff 0.15 release line the pre-commit hook already used. The previous
+  floating floor let a
   fresh environment resolve to the 0.16 rule generation, which reports 33
   findings on the existing code base and so turned the lint gate red
   independently of any change. Those findings need their own review pass and are
