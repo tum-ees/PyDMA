@@ -5,6 +5,90 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.2] - 2026-08-04
+
+### Added
+
+* `tests/test_strict_sto.py` pins the plateau-collapse contract: the plateau
+  configuration that used to lose voltage support, the eight-ulp level pooling
+  in both curve directions, the inward-only boundary shift, the input and
+  post-condition exceptions, and a bit-for-bit comparison against the previous
+  arithmetic wherever the plateau levels are well separated. The file carries a
+  frozen copy of the pre-1.1.2 implementation as its contrast reference, so the
+  input class that used to be damaged stays documented in executable form.
+
+* The `pchip_resample_for_pybamm` docstring now states that its deduplication is
+  the intended handling for the genuine plateaus of a raw PAV curve, and that a
+  collapsed curve reaches it tie-free, so a residual tie there indicates a defect
+  in `_collapse_plateaus` rather than a plateau to be squashed.
+
+### Changed
+
+* `_collapse_plateaus` states its contract with real exceptions instead of bare
+  `assert`, so the guarantees survive `python -O`. Unusable input raises
+  `ValueError`: a voltage and capacity pair of unequal length, a non-finite
+  voltage, capacity or `eps` value, a capacity curve that after the monotone
+  snap is constant, and finite samples whose overall range overflows the
+  floating-point span. The finiteness checks matter because every comparison
+  against NaN is false, so a NaN used to pass the degeneracy guard, the repair
+  sweep and the post-conditions untouched and left the caller with a silently
+  NaN-poisoned curve. A collapsed curve that is non-finite, not strictly
+  monotone, or that does not preserve both range endpoints exactly raises
+  `RuntimeError`, because these properties now hold by construction and a
+  violation would mean a defect in the function rather than an unusable input.
+  Error messages identify the offending samples and values. Monotonicity and
+  endpoint errors additionally report both capacities and voltages.
+
+* Only the opt-in collapse path changes. `collapse_plateaus` still defaults to
+  `False`, `pchip_resample_for_pybamm` is numerically untouched, and silicon OCP
+  tables exported through the default raw-PAV path reproduce bit-for-bit, checked
+  against the committed M35A lithiation and delithiation tables. Callers that
+  pass `collapse_plateaus=True` receive intentionally corrected values wherever
+  the quarter-gap bound now applies. On M35A-like data that correction reaches
+  about 1e-5 in capacity and stays below 0.005 mV after the 1001-point PCHIP
+  resample. Where the plateau levels are well separated the new code reproduces
+  the previous arithmetic exactly.
+
+* Pinned the `ruff` development dependency to `>=0.15.21,<0.16`, matching the
+  Ruff 0.15 release line the pre-commit hook already used. The previous
+  floating floor let a
+  fresh environment resolve to the 0.16 rule generation, which reports 33
+  findings on the existing code base and so turned the lint gate red
+  independently of any change. Those findings need their own review pass and are
+  not part of this release.
+
+### Fixed
+
+* `generate_si_curve(collapse_plateaus=True)` no longer loses part of the voltage
+  support when two PAV plateau levels sit closer together than the tie-breaking
+  shift, which happens next to the saturation boundary at q = 0 and q = 1.
+  Previously the two shifts crossed, the monotonicity sweep pushed the samples
+  past the capacity range, and the final clip put them back onto the range
+  boundary, where they became exact ties. The deduplication in
+  `pchip_resample_for_pybamm` then dropped the tied samples together with their
+  voltages and truncated the exported curve while every check stayed green. The
+  shift is now bounded by a quarter of the distance to the neighbouring plateau
+  levels, a plateau sitting on the range boundary is shifted inward only, and the
+  final clip is gone, so the collapsed capacity can no longer step outside the
+  range of the input curve. This mirrors the fix shipped in the MATLAB
+  DegradationModeAnalysis framework 2.1.0.
+
+* Plateau levels within eight floating-point ulps of each other are pooled into a
+  single plateau instead of being shifted apart, because at that distance a
+  quarter of the gap is no longer representable and the shifted endpoint rounds
+  straight back onto its own level. The merged plateau keeps the first and the
+  last sample of the whole group, so its voltage extent is preserved. When the
+  whole capacity range is only a few ulps wide and the pooling therefore merges
+  the entire curve into one plateau, the collapse reports the two range edges
+  directly, so both edges keep their exact value instead of one of them being
+  shifted off it.
+
+* The ulp arithmetic inside `_collapse_plateaus` is measured on absolute
+  magnitudes. `numpy.spacing` returns a negative step for a negative argument,
+  and the internal sign flip that lets a falling curve share the rising code path
+  makes every working value negative there, so measuring on the raw value pointed
+  the level pooling and the repair sweep the wrong way for every discharge curve.
+
 ## [1.1.1] - 2026-07-13
 
 ### Added

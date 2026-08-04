@@ -75,13 +75,22 @@ python -m mypy src/pydma
 # Lint
 python -m ruff check src tests doc
 
-# Tutorial sanity-check (manual): open and run BOTH tutorial notebooks
-# end-to-end on the release branch, then commit their refreshed outputs:
+# Formatting (same pins CI enforces; a reformat here is a real gate failure)
+python -m black --check src tests doc
+python -m isort --check-only src tests doc
+
+# Tutorial sanity-check (manual): run BOTH tutorial notebooks end-to-end on
+# the release branch. Treat the run as a gate, not as a source of commits.
+# The fits use differential evolution without a seed, so the numbers move
+# substantially between runs on identical code. Measured across two runs of
+# the same commit: joint-fit RMSE from 3.9 to 8.3 mV, blend gamma_Si from
+# 0.224 to 0.234. Afterwards revert the stochastic notebook outputs and
+# notebooks/dma_results_P45B_23.json, then commit only what you actually
+# meant to change, such as the version stamps and any deliberate source edits.
 #
 #   notebooks/getting_started.ipynb
-#     Confirm joint-fit RMSE ~ 4-6 mV per RPT and blend gamma_Si ~ 0.22
-#     still hold. RMSE values drift at the 4th-5th decimal between runs
-#     (stochastic DE without a seed); that is expected.
+#     Confirm the joint fits still land in the single-digit mV band and that
+#     blend gamma_Si is still about 0.22.
 #
 #   notebooks/pybamm_integration.ipynb
 #     Confirm the printed PyDMA version stamp matches the release and that
