@@ -25,9 +25,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Changed
 
 * `_collapse_plateaus` states its contract with real exceptions instead of bare
-  `assert`, so the guarantees survive `python -O`. A voltage and capacity pair of
-  unequal length, and a capacity curve that is constant after the monotone snap,
-  raise `ValueError`. A collapsed curve that is not strictly monotone, or that
+  `assert`, so the guarantees survive `python -O`. Unusable input raises
+  `ValueError`: a voltage and capacity pair of unequal length, a non-finite
+  voltage, capacity or `eps` value, and a capacity curve that after the monotone
+  snap is either constant or spans less than the smallest shift that fits inside
+  it. The finiteness check matters because every comparison against NaN is
+  false, so a NaN used to pass the degeneracy guard, the repair sweep and both
+  post-conditions untouched and left the caller with a silently NaN-poisoned
+  curve. A collapsed curve that is not strictly monotone, or that
   left the range of the input curve, raises `RuntimeError`, because both
   properties now hold by construction and a violation would mean a defect in the
   function rather than an unusable input. The messages carry the offending sample
@@ -43,18 +48,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   resample. Where the plateau levels are well separated the new code reproduces
   the previous arithmetic exactly.
 
-* Pinned the `ruff` development dependency to `>=0.15.21,<0.16`, the version the
-  pre-commit hook already used. The previous floating floor let a fresh
-  environment resolve to ruff 0.16.1, whose wider default rule set reports 33
-  findings on the untouched code base and so turned the lint gate red
-  independently of any change. Only one of those findings is a mechanical
-  cleanup. The rest ask for narrowing the deliberate blanket exception handlers
-  that keep the optimizer objectives from crashing a fit, changing a raised
-  exception type, restructuring nested numerical guards, rewrapping f-strings
-  that the formatter produced, and sorting the public `__all__` listings, and
-  their import ordering assumes a line length of 88 where this project
-  configures 100 for black and isort. Moving to ruff 0.16 is therefore its own
-  piece of work rather than part of this release.
+* Pinned the `ruff` development dependency to `>=0.15.21,<0.16`, matching the
+  version the pre-commit hook already used. The previous floating floor let a
+  fresh environment resolve to the 0.16 rule generation, which reports 33
+  findings on the existing code base and so turned the lint gate red
+  independently of any change. Those findings need their own review pass and are
+  not part of this release.
 
 ### Fixed
 
