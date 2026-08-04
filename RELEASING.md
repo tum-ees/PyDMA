@@ -86,8 +86,7 @@ python -m isort --check-only src tests doc
 # the same commit: joint-fit RMSE from 3.9 to 8.3 mV, blend gamma_Si from
 # 0.224 to 0.234. Afterwards revert the stochastic notebook outputs and
 # notebooks/dma_results_P45B_23.json, then commit only what you actually
-# meant to change, such as the version stamps. The v1.1.1 release commit did
-# exactly that: one line per notebook, and no numeric change to the JSON.
+# meant to change, such as the version stamps and any deliberate source edits.
 #
 #   notebooks/getting_started.ipynb
 #     Confirm the joint fits still land in the single-digit mV band and that
