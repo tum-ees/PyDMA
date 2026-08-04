@@ -289,6 +289,61 @@ def test_constant_capacity_raises_value_error():
         _collapse_plateaus(np.array([0.3, 0.2, 0.1]), np.array([0.4, 0.4, 0.4]))
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [np.nan, np.inf, -np.inf],
+    ids=["nan", "inf", "-inf"],
+)
+def test_non_finite_capacity_raises_value_error(bad):
+    """Non-finite capacity must be rejected at entry.
+
+    Every comparison against NaN is False, so before this check a NaN slipped
+    past the degeneracy guard, the repair sweep and both post-conditions and the
+    caller silently received a NaN-poisoned curve.
+    """
+    with pytest.raises(ValueError, match="capacity must be finite"):
+        _collapse_plateaus(np.array([0.3, 0.2, 0.1]), np.array([0.0, bad, 1.0]))
+
+
+def test_non_finite_voltage_raises_value_error():
+    with pytest.raises(ValueError, match="voltage must be finite"):
+        _collapse_plateaus(np.array([0.3, np.nan, 0.1]), np.array([0.0, 0.5, 1.0]))
+
+
+def test_non_finite_eps_raises_value_error():
+    with pytest.raises(ValueError, match="eps must be finite"):
+        _collapse_plateaus(SEPARATED_V_UP, SEPARATED_Q_UP, eps=np.nan)
+
+
+def test_capacity_range_of_one_ulp_raises_value_error():
+    """A range about one ulp wide is degenerate one step out from constant.
+
+    All levels pool into a single run and the machine-epsilon shift floor is
+    then wider than the range itself, so the inward shift would step past the
+    lower bound. Before this check that surfaced as a RuntimeError, which
+    claimed a defect in the collapse rather than naming the unusable input.
+    """
+    nxt = np.nextafter(0.5, 1.0)
+    with pytest.raises(ValueError, match="wider than the smallest"):
+        _collapse_plateaus(np.array([0.40, 0.38, 0.30, 0.28]), np.array([0.5, 0.5, nxt, nxt]))
+    with pytest.raises(ValueError, match="wider than the smallest"):
+        _collapse_plateaus(np.array([0.40, 0.30]), np.array([0.5, nxt]))
+
+
+def test_narrow_but_usable_capacity_range_still_collapses():
+    """The guard must reject only what is genuinely unusable. A range that is
+    narrow yet wider than the shift floor still produces a valid curve."""
+    q = np.array([1.0, 1.0, 1.0 + 1e-14, 1.0 + 1e-14])
+    v = np.array([0.40, 0.38, 0.30, 0.28])
+
+    v_out, q_out = _collapse_plateaus(v, q)
+
+    assert np.all(np.diff(q_out) > 0.0)
+    assert float(q_out[0]) >= float(q.min())
+    assert float(q_out[-1]) <= float(q.max())
+    assert v_out.size == q_out.size
+
+
 def test_short_input_passes_through():
     v = np.array([0.3])
     q = np.array([0.5])

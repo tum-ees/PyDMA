@@ -166,8 +166,10 @@ def _collapse_plateaus(
     ------
     ValueError
         If ``voltage`` and ``capacity`` do not hold the same number of
-        samples, or if the snapped capacity curve is constant so there is no
-        non-degenerate range to collapse onto.
+        samples, if any voltage, capacity or ``eps`` value is not finite, or
+        if the snapped capacity curve is constant or spans less than the
+        smallest shift that can be placed inside it, so there is no usable
+        range to collapse onto.
     RuntimeError
         If the constructed output is not strictly monotone, or if it left the
         range of the snapped input curve. Both properties hold by construction,
@@ -182,6 +184,26 @@ def _collapse_plateaus(
             f"voltage and capacity must hold the same number of samples; got "
             f"{v_in.shape} vs {q_in.shape}."
         )
+    # Non-finite input has to be rejected here rather than relied on to trip a
+    # later check. Every comparison against NaN is False, so a NaN would slip
+    # past the degeneracy guard, the monotonicity sweep and both post-conditions
+    # untouched and leave the caller with a silently NaN-poisoned curve.
+    bad_v: NDArray[np.intp] = np.flatnonzero(~np.isfinite(v_in))
+    if bad_v.size:
+        i = int(bad_v[0])
+        raise ValueError(
+            f"voltage must be finite; sample {i} is {float(v_in[i])!r} "
+            f"({int(bad_v.size)} non-finite sample(s) in total)."
+        )
+    bad_q: NDArray[np.intp] = np.flatnonzero(~np.isfinite(q_in))
+    if bad_q.size:
+        i = int(bad_q[0])
+        raise ValueError(
+            f"capacity must be finite; sample {i} is {float(q_in[i])!r} "
+            f"({int(bad_q.size)} non-finite sample(s) in total)."
+        )
+    if eps is not None and not bool(np.isfinite(float(eps))):
+        raise ValueError(f"eps must be finite; got {float(eps)!r}.")
     n = int(q_in.size)
     if n < 2:
         return voltage, capacity
@@ -203,6 +225,21 @@ def _collapse_plateaus(
         raise ValueError(
             f"Collapsing plateaus requires a non-degenerate capacity range, but the "
             f"snapped curve is constant at q = {direction * q_work_min!r}."
+        )
+    # A curve whose whole range is about one ulp wide is degenerate in the same
+    # way, one step out. Every level pools into a single run, and the smallest
+    # shift the collapse can place is the machine-epsilon floor below, which is
+    # then wider than the range itself, so the inward shift would step past the
+    # lower bound. That is bad input, not a defect, so it belongs here and not
+    # in the post-conditions.
+    q_work_span = q_work_max - q_work_min
+    min_span = max(float(np.finfo(np.float64).eps), _ulp(q_work_min), _ulp(q_work_max))
+    if q_work_span <= min_span:
+        raise ValueError(
+            f"Collapsing plateaus requires a capacity range wider than the smallest "
+            f"shift that fits inside it, but the snapped curve spans only "
+            f"{q_work_span!r} between q = {direction * q_work_min!r} and "
+            f"q = {direction * q_work_max!r} (minimum {min_span!r})."
         )
 
     q_range = float(q_in.max() - q_in.min())
