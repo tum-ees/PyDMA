@@ -36,8 +36,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   monotone, or that does not preserve both range endpoints exactly raises
   `RuntimeError`, because these properties now hold by construction and a
   violation would mean a defect in the function rather than an unusable input.
-  Where samples are at fault, the messages carry the offending indices,
-  capacities and voltages.
+  Error messages identify the offending samples and values. Monotonicity and
+  endpoint errors additionally report both capacities and voltages.
 
 * Only the opt-in collapse path changes. `collapse_plateaus` still defaults to
   `False`, `pchip_resample_for_pybamm` is numerically untouched, and silicon OCP
