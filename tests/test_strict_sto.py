@@ -330,6 +330,62 @@ def test_capacity_range_of_one_ulp_raises_value_error():
         _collapse_plateaus(np.array([0.40, 0.30]), np.array([0.5, nxt]))
 
 
+def _ulp_steps(base, k):
+    """``base`` advanced by ``k`` representable steps toward 1.0."""
+    out = base
+    for _ in range(k):
+        out = np.nextafter(out, 1.0)
+    return float(out)
+
+
+# At base 0.5 one ulp is 1.11e-16 and the machine-epsilon shift floor is
+# 2.22e-16, i.e. two ulps, so spans of 1 and 2 ulps are rejected as unusable and
+# spans of 3 ulps and up must round-trip their exact range edges.
+_ULP_SPANS_REJECTED = [1, 2]
+_ULP_SPANS_COLLAPSED = [3, 4, 5, 6, 7, 8]
+
+
+@pytest.mark.parametrize("k", _ULP_SPANS_REJECTED + _ULP_SPANS_COLLAPSED)
+@pytest.mark.parametrize("rising", [True, False], ids=["rising", "falling"])
+def test_few_ulp_capacity_range_keeps_both_exact_edges(k, rising):
+    """A range a few ulps wide pools into a single run, and that run must still
+    report both exact range edges.
+
+    Before the single-run case was handled explicitly, the pooled level sat at
+    the upper end of the range, so the ``level == q_work_min`` branch never
+    fired and the opposite edge was shifted off its exact value and silently
+    lost: rising curves lost their minimum, falling curves lost their maximum.
+    """
+    lo = 0.5
+    hi = _ulp_steps(lo, k)
+    if rising:
+        v = np.array([0.40, 0.38, 0.30, 0.28])
+        q = np.array([lo, lo, hi, hi])
+    else:
+        v = np.array([0.28, 0.30, 0.38, 0.40])
+        q = np.array([hi, hi, lo, lo])
+
+    if k in _ULP_SPANS_REJECTED:
+        with pytest.raises(ValueError, match="wider than the smallest"):
+            _collapse_plateaus(v, q)
+        return
+
+    v_out, q_out = _collapse_plateaus(v, q)
+
+    # Exact equality, not merely "inside the range".
+    assert float(q_out.min()) == lo, f"lower edge lost: {q_out.min()!r} != {lo!r}"
+    assert float(q_out.max()) == hi, f"upper edge lost: {q_out.max()!r} != {hi!r}"
+    assert float(q_out[0]) == float(q[0]), "first sample must keep its exact capacity"
+    assert float(q_out[-1]) == float(q[-1]), "last sample must keep its exact capacity"
+    if rising:
+        assert np.all(np.diff(q_out) > 0.0)
+    else:
+        assert np.all(np.diff(q_out) < 0.0)
+    # Voltage support: the run's first and last voltage survive.
+    assert float(v_out[0]) == float(v[0])
+    assert float(v_out[-1]) == float(v[-1])
+
+
 def test_narrow_but_usable_capacity_range_still_collapses():
     """The guard must reject only what is genuinely unusable. A range that is
     narrow yet wider than the shift floor still produces a valid curve."""

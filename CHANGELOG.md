@@ -5,7 +5,7 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
-## [1.1.2] - 2026-08-03
+## [1.1.2] - 2026-08-04
 
 ### Added
 
@@ -75,7 +75,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   single plateau instead of being shifted apart, because at that distance a
   quarter of the gap is no longer representable and the shifted endpoint rounds
   straight back onto its own level. The merged plateau keeps the first and the
-  last sample of the whole group, so its voltage extent is preserved.
+  last sample of the whole group, so its voltage extent is preserved. When the
+  whole capacity range is only a few ulps wide and the pooling therefore merges
+  the entire curve into one plateau, the collapse reports the two range edges
+  directly, so both edges keep their exact value instead of one of them being
+  shifted off it.
 
 * The ulp arithmetic inside `_collapse_plateaus` is measured on absolute
   magnitudes. `numpy.spacing` returns a negative step for a negative argument,

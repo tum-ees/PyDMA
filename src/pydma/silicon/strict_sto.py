@@ -281,6 +281,22 @@ def _collapse_plateaus(
         levels = merged_levels
     n_runs = int(levels.size)
 
+    # When the whole capacity range is only a few ulps wide, the pooling above
+    # merges every level into a single run. There is then no neighbouring level
+    # to shift against, and the merged level sits at the upper end of the range
+    # by construction, so the inward-only rule below would keep that end exact
+    # and shift the other one off its own value, silently losing the opposite
+    # capacity edge. Emit the two range edges directly instead, which is what
+    # the boundary rule is trying to achieve in the first place. A single run
+    # can only arise from pooling here, because a curve that was one run to
+    # begin with is constant and was already rejected above.
+    if n_runs == 1:
+        v_edges: NDArray[np.float64] = np.array([v_in[starts[0]], v_in[ends[0]]], dtype=np.float64)
+        q_edges: NDArray[np.float64] = np.array([q_work_min, q_work_max], dtype=np.float64)
+        if direction < 0:
+            q_edges = -q_edges
+        return v_edges, q_edges
+
     # Shift budget per run: the global scale, capped at a quarter of the
     # distance to either neighbouring level.
     shift: NDArray[np.float64] = np.full(n_runs, eps_shift, dtype=np.float64)
