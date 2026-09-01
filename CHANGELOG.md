@@ -5,6 +5,84 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [2.0.0] - 2026-09-01
+
+### Added
+
+* Fitted series-resistance correction for the full-cell reconstruction (default
+  off): `DMAConfig.allow_resistance_offset` with `pocv_current_a`,
+  `resistance_offset_limit_ohm_ah`, and `allow_negative_resistance_offset`.
+  Parameter slot 9 (`r_offset_ohm`, in Ohm) lifts the model OCV by
+  `sign(direction) * R * |I|`. DVA and ICA never read the slot; a constant would
+  drop out of their derivatives anyway. With the flag off the slot is pinned to
+  zero, and every stored 8-parameter vector expands to the same reconstruction as
+  before.
+
+* `apply_aging` in `pydma.utils.balancing`: derives an aged electrode balancing at
+  fixed `c_max` by scaling `eps_s` with `1 - LAM`. The former docstring recipe
+  cancelled LAM out of `Q_n` and is documented as such.
+
+* `FittedParams.from_dict`, `DMAResult.config_snapshot` for fit provenance, and
+  the accepted-run parameter scatter (`param_std`) on `DMAResult`.
+
+* `csv_kwargs` passthrough in the loaders (for example `{"sep": ";", "decimal":
+  ","}`), `cathode_convention` in the OCP-model window functions, `x_is_soc` in
+  the comparison plots, `include_geometry` in `pybamm_overrides`.
+
+* Loud validation: blend electrodes must match `use_anode_blend`/`use_cathode_blend`,
+  OCP curves must be finite, ROI bounds must be SOC fractions, `DMAConfig` rejects
+  unknown attributes and re-validates on assignment, `CellGeometry` rejects
+  non-positive fields.
+
+* An expanded regression suite: hand-derived LAM/LLI expectations, direct PAV
+  pooling checks, plot smoke tests with an rcParams invariance check, aging-study
+  gap discovery, and a resistance-offset acceptance suite.
+
+### Changed
+
+* `popsize` now sets the actual differential-evolution population size regardless
+  of pinned parameter slots; the effective population no longer shrinks as
+  features are disabled.
+
+* `lfp_preset` selects the intended split OCV ROI (0-15 % and 85-100 % SOC)
+  instead of the full range.
+
+* `load_aging_study` discovers every present check-up by listing the directory and
+  warns about missing indices instead of stopping at the first gap.
+
+* Objective failures raise or warn once instead of silently returning the penalty
+  value for every exception; an empty ROI is a configuration error and raises.
+
+* Plot functions no longer mutate global `plt.rcParams`; styles are scoped per
+  call.
+
+* Electrode and blend interpolation clamps at the support edges instead of
+  returning 0.0 outside the support.
+
+* `derive_balancing_from_result` defaults to `on_out_of_range="raise"` and reports
+  clipping explicitly.
+
+* `fit_ocv`/`fit_dva`/`fit_ica`/`combined_objective` take ROI and flag arguments
+  keyword-only; the inert `inhom_points` parameter is gone. The three fit terms
+  share precomputed electrode potentials with bit-identical results.
+
+### Fixed
+
+* `voltage_anchored_windows` inverts only the strictly monotonic part of the
+  reconstruction, keeping interpolation fill artefacts out of the anchored
+  windows.
+
+* DVA/ICA edge guards (zero denominators, fewer than two points, NaN inputs),
+  `.mat` NaN filtering, direction-symmetric pOCV file matching, and
+  `calculate_mse` returning `inf` for an empty mask.
+
+### Removed
+
+* Dead API: `calculate_full_cell_ocv`, `create_optimizer_from_config`,
+  `run_single_fast`, `SiliconCurveParams`, `calculate_inhomogeneity_for_electrode`,
+  `DMAConfig.get_bounds`, `DMAConfig.calculate_roi_bounds`, and the
+  never-populated `is_cyclic`/`fit_reverse` fields, `get_potential_at_scaled_soc`.
+
 ## [1.1.2] - 2026-08-04
 
 ### Added

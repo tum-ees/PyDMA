@@ -21,6 +21,11 @@ from scipy.optimize import OptimizeResult, differential_evolution
 
 from pydma.utils.dma_config import DMAConfig
 
+# The one UserWarning scipy raises from within differential_evolution that
+# describes an expected outcome of this wrapper's own settings. Everything else
+# scipy has to say, the caller gets to see.
+_SCIPY_DE_WARNING = "differential_evolution: the 'workers' keyword"
+
 
 @dataclass
 class OptimizationRun:
@@ -50,7 +55,12 @@ class MultiRunResult:
     """Result of multi-run optimization."""
 
     best_params: NDArray[np.floating]
-    """Best parameters from accepted runs."""
+    """Parameters of the accepted run with the lowest OCV RMSE.
+
+    The selection is made on ``OptimizationRun.rmse`` (OCV RMSE in Volts from
+    the optimizer's ``rmse_fn``), not on the weighted cost. When no run meets
+    the threshold, the rejected run with the lowest RMSE is reported instead.
+    """
 
     best_cost: float
     """Best cost value."""
@@ -64,11 +74,9 @@ class MultiRunResult:
     rejected_runs: list[OptimizationRun] = field(default_factory=list)
     """List of rejected runs (RMSE >= threshold)."""
 
-    mean_params: NDArray[np.floating] | None = None
-    """Mean parameters from accepted runs."""
-
     std_params: NDArray[np.floating] | None = None
-    """Standard deviation of parameters from accepted runs."""
+    """Standard deviation of parameters over the accepted runs, ``None`` when
+    no run was accepted. A single accepted run makes it all zeros."""
 
     @property
     def n_accepted(self) -> int:
@@ -170,24 +178,22 @@ class DMAOptimizer:
         OptimizationRun
             Result of the optimization run
         """
-        # Merge solver options with any overrides
-        de_kwargs = {
-            "strategy": self._solver_opts.get("strategy", "best1bin"),
-            "maxiter": self._solver_opts.get("maxiter", 1000),
-            "popsize": self._solver_opts.get("popsize", 500),
-            "tol": self._solver_opts.get("tol", 0.01),
-            "mutation": self._solver_opts.get("mutation", (0.5, 1.0)),
-            "recombination": self._solver_opts.get("recombination", 0.7),
-            "workers": self._solver_opts.get("workers", 1),
-            "updating": "deferred" if self._solver_opts.get("workers", 1) > 1 else "immediate",
-            "disp": False,
-        }
+        # Solver options from the speed preset, then per-call overrides
+        de_kwargs: dict[str, Any] = dict(self._solver_opts)
         de_kwargs.update(kwargs)
+        de_kwargs.setdefault("strategy", "best1bin")
+        de_kwargs.setdefault("disp", False)
 
-        # SciPy DE popsize is a multiplier of parameter dimension.
-        # Interpret config popsize as absolute population size (MATLAB-like),
-        # then convert to DE multiplier.
-        n_params = max(1, len(self.bounds))
+        # workers != 1 (including -1 for all CPUs) requires deferred updating,
+        # unless the caller states an updating mode of its own.
+        workers = int(de_kwargs.get("workers", 1))
+        de_kwargs.setdefault("updating", "deferred" if workers != 1 else "immediate")
+
+        # SciPy DE popsize is a multiplier of the free parameter dimension:
+        # the population holds popsize * (N - N_equal) members, so dimensions
+        # pinned to lb == ub do not count. Interpret the config popsize as the
+        # absolute population size (MATLAB-like) and convert.
+        n_params = max(1, sum(1 for lower, upper in self.bounds if upper > lower))
         target_pop = int(de_kwargs.get("popsize", 15))
         pop_multiplier = int(np.ceil(target_pop / n_params))
         de_kwargs["popsize"] = max(5, pop_multiplier)
@@ -206,7 +212,7 @@ class DMAOptimizer:
 
         # Run differential evolution
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+            warnings.filterwarnings("ignore", message=_SCIPY_DE_WARNING, category=UserWarning)
             result: OptimizeResult = differential_evolution(
                 self.objective,
                 self.bounds,
@@ -317,7 +323,6 @@ class DMAOptimizer:
 
             # Compute statistics across accepted runs
             all_params = np.array([r.params for r in accepted_runs])
-            mean_params = np.mean(all_params, axis=0)
             std_params = np.std(all_params, axis=0)
         else:
             # Fall back to best rejected run if no accepted runs
@@ -331,7 +336,6 @@ class DMAOptimizer:
                 )
             else:
                 raise RuntimeError("No optimization runs completed")
-            mean_params = None
             std_params = None
 
         return MultiRunResult(
@@ -340,52 +344,5 @@ class DMAOptimizer:
             best_rmse=best_run.rmse,
             accepted_runs=accepted_runs,
             rejected_runs=rejected_runs,
-            mean_params=mean_params,
             std_params=std_params,
         )
-
-    def run_single_fast(self, **kwargs: Any) -> OptimizationRun:
-        """Run a single fast optimization (useful for debugging).
-
-        Uses reduced population and iterations for quick testing.
-
-        Parameters
-        ----------
-        **kwargs : Any
-            Additional arguments passed to differential_evolution
-
-        Returns
-        -------
-        OptimizationRun
-            Result of the optimization run
-        """
-        return self._run_single(
-            popsize=50,
-            maxiter=100,
-            **kwargs,
-        )
-
-
-def create_optimizer_from_config(
-    config: DMAConfig,
-    objective: Callable[[NDArray[np.floating]], float],
-    callback: Callable[[NDArray[np.floating], float], None] | None = None,
-) -> DMAOptimizer:
-    """Create an optimizer from a configuration object.
-
-    Parameters
-    ----------
-    config : DMAConfig
-        Configuration object
-    objective : Callable
-        Objective function to minimize
-    callback : Callable, optional
-        Progress callback
-
-    Returns
-    -------
-    DMAOptimizer
-        Configured optimizer instance
-    """
-    bounds = config.get_bounds()
-    return DMAOptimizer(config, objective, bounds, callback)

@@ -6,6 +6,7 @@ such as Silicon-Graphite anodes where the OCP is a weighted combination
 of two component materials.
 """
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -13,8 +14,16 @@ from scipy.interpolate import interp1d
 
 from pydma.electrodes.electrode import ElectrodeOCP
 
+# Raised rather than asserted so the invariant survives python -O.
+_UNPREPARED_MSG = (
+    "BlendElectrode common-window arrays are missing after _prepare_blend_data(); "
+    "every code path builds them, so this signals a defect rather than bad input."
+)
 
-@dataclass
+
+# eq=False: the numpy fields would make a generated __eq__ raise on the
+# ambiguous truth value of an array comparison.
+@dataclass(eq=False)
 class BlendElectrode:
     """
     Blended electrode model combining two component materials.
@@ -25,6 +34,13 @@ class BlendElectrode:
     Q_blend(V) = gamma * Q_blend2(V) + (1 - gamma) * Q_blend1(V)
 
     The blending is done on a common voltage grid, not SOC.
+
+    Meaning of gamma
+    ----------------
+    ``gamma`` weights the two components on the COMMON VOLTAGE WINDOW. Where
+    the two components share one carrier, as they do along the
+    :func:`~pydma.silicon.generator.generate_si_curve` path, it is the capacity
+    share of blend2 in the blended electrode.
 
     Attributes
     ----------
@@ -42,7 +58,7 @@ class BlendElectrode:
     >>> graphite = ElectrodeOCP(soc_gr, v_gr, name="Graphite", electrode_type="anode")
     >>> silicon = ElectrodeOCP(soc_si, v_si, name="Silicon", electrode_type="anode")
     >>> blend = BlendElectrode(blend1=graphite, blend2=silicon, electrode_type="anode")
-    >>> soc, voltage = blend.get_blend_curve(gamma=0.25)  # 25% silicon
+    >>> soc, voltage = blend.get_blend_curve(gamma=0.25)  # 25% silicon on the window
     """
 
     blend1: ElectrodeOCP
@@ -69,6 +85,41 @@ class BlendElectrode:
 
         # Prepare common voltage grid and interpolated Q values
         self._prepare_blend_data()
+
+    @staticmethod
+    def _inversion_support(component: ElectrodeOCP, label: str) -> tuple[np.ndarray, np.ndarray]:
+        """Sorted, tie-free (voltage, soc) support for one component's Q(V).
+
+        Inverting V(Q) requires the component's voltage to walk in one direction
+        along its own SOC axis. Where it reverses, several capacities share a
+        voltage and the inversion silently keeps whichever one the sort happens
+        to place first, so the reversal is rejected here instead.
+        """
+        v = np.asarray(component.voltage, dtype=float).ravel()
+        q = np.asarray(component.soc, dtype=float).ravel()
+
+        signs = np.sign(np.diff(v))
+        nonzero = signs[signs != 0]
+        if nonzero.size and not bool(np.all(nonzero == nonzero[0])):
+            first = int(np.flatnonzero(signs == -nonzero[0])[0])
+            raise ValueError(
+                f"{label} ('{component.name}') has a non-monotone voltage axis: it "
+                f"reverses between samples {first} and {first + 1} "
+                f"({float(v[first]):.6g} V -> {float(v[first + 1]):.6g} V), so Q(V) "
+                "is not a function and the blend inversion is undefined."
+            )
+
+        order = np.argsort(v, kind="stable")
+        v_sorted = v[order]
+        q_sorted = q[order]
+        v_unique, unique_idx = np.unique(v_sorted, return_index=True)
+        q_unique = q_sorted[unique_idx]
+        if v_unique.size < 2:
+            raise ValueError(
+                f"{label} ('{component.name}') collapses to {int(v_unique.size)} distinct "
+                "voltage(s); the blend inversion needs at least 2."
+            )
+        return v_unique, q_unique
 
     def _prepare_blend_data(self, n_points: int | None = None):
         """
@@ -97,6 +148,12 @@ class BlendElectrode:
         v_min = max(v1_min, v2_min)
         v_max = min(v1_max, v2_max)
 
+        if not (np.isfinite(v_min) and np.isfinite(v_max)):
+            raise ValueError(
+                f"Common voltage window is not finite: [{v_min}, {v_max}] from blend1 "
+                f"[{v1_min}, {v1_max}] and blend2 [{v2_min}, {v2_max}]."
+            )
+
         if v_min >= v_max:
             raise ValueError(
                 f"No overlapping voltage range between blend1 [{v1_min:.3f}, {v1_max:.3f}] "
@@ -108,26 +165,43 @@ class BlendElectrode:
 
         self._common_voltage = np.linspace(v_min, v_max, n_points)
 
-        # Create Q(V) interpolators (invert the V(Q) relationship)
-        # For blend1
+        # Create Q(V) interpolators (invert the V(Q) relationship). Queries off
+        # the component's own voltage support are clamped to its end capacities;
+        # a 0 fill would read as "empty electrode" instead.
+        v1_support, q1_support = self._inversion_support(self.blend1, "blend1")
         q1_of_v = interp1d(
-            self.blend1.voltage,
-            self.blend1.soc,
+            v1_support,
+            q1_support,
             kind="linear",
             bounds_error=False,
-            fill_value=0.0,
+            fill_value=(float(q1_support[0]), float(q1_support[-1])),
+            assume_sorted=True,
         )
         self._q_blend1_interp = q1_of_v(self._common_voltage)
 
         # For blend2
+        v2_support, q2_support = self._inversion_support(self.blend2, "blend2")
         q2_of_v = interp1d(
-            self.blend2.voltage,
-            self.blend2.soc,
+            v2_support,
+            q2_support,
             kind="linear",
             bounds_error=False,
-            fill_value=0.0,
+            fill_value=(float(q2_support[0]), float(q2_support[-1])),
+            assume_sorted=True,
         )
         self._q_blend2_interp = q2_of_v(self._common_voltage)
+
+    def _ensure_prepared(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The common voltage grid and both Q interpolations, prepared if needed."""
+        if self._common_voltage is None:
+            self._prepare_blend_data()
+        if (
+            self._common_voltage is None
+            or self._q_blend1_interp is None
+            or self._q_blend2_interp is None
+        ):
+            raise RuntimeError(_UNPREPARED_MSG)
+        return self._common_voltage, self._q_blend1_interp, self._q_blend2_interp
 
     def get_blend_curve(self, gamma: float) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -158,15 +232,11 @@ class BlendElectrode:
         if gamma < 0 or gamma > 1:
             raise ValueError(f"gamma must be in [0, 1], got {gamma}")
 
-        if self._common_voltage is None:
-            self._prepare_blend_data()
-        assert self._common_voltage is not None
-        assert self._q_blend1_interp is not None
-        assert self._q_blend2_interp is not None
+        common_voltage, q1_interp, q2_interp = self._ensure_prepared()
 
         # Weighted sum of capacities at each voltage
         # DIFFERENCE FROM MATLAB: Same algorithm, different implementation
-        q_blend = gamma * self._q_blend2_interp + (1 - gamma) * self._q_blend1_interp
+        q_blend = gamma * q2_interp + (1 - gamma) * q1_interp
 
         # Normalize Q to 0-1 (SOC)
         q_min = q_blend.min()
@@ -180,7 +250,7 @@ class BlendElectrode:
         # Sort by normalized Q so we can invert to V(Q)
         sort_idx = np.argsort(q_norm)
         q_sorted = q_norm[sort_idx]
-        v_sorted = self._common_voltage[sort_idx]
+        v_sorted = common_voltage[sort_idx]
 
         # Create uniform SOC grid
         blend_soc = np.linspace(0, 1, len(q_sorted))
@@ -207,15 +277,11 @@ class BlendElectrode:
         if gamma < 0 or gamma > 1:
             raise ValueError(f"gamma must be in [0, 1], got {gamma}")
 
-        if self._common_voltage is None:
-            self._prepare_blend_data()
-        assert self._common_voltage is not None
-        assert self._q_blend1_interp is not None
-        assert self._q_blend2_interp is not None
+        common_voltage, q1_interp, q2_interp = self._ensure_prepared()
 
         blend_soc_arr = np.asarray(blend_soc, dtype=float)
 
-        q_blend = gamma * self._q_blend2_interp + (1 - gamma) * self._q_blend1_interp
+        q_blend = gamma * q2_interp + (1 - gamma) * q1_interp
         q_min = q_blend.min()
         q_max = q_blend.max()
         if abs(q_max - q_min) < 1e-10:
@@ -225,7 +291,7 @@ class BlendElectrode:
         q_norm = (q_blend - q_min) / (q_max - q_min)
         sort_idx = np.argsort(q_norm)
         q_sorted = q_norm[sort_idx]
-        v_sorted = self._common_voltage[sort_idx]
+        v_sorted = common_voltage[sort_idx]
 
         v_of_blend_soc = interp1d(
             q_sorted,
@@ -234,21 +300,36 @@ class BlendElectrode:
             fill_value="extrapolate",
         )
         # Component stoichiometries are recovered at the same physical voltage.
-        voltage = v_of_blend_soc(blend_soc_arr)
+        voltage = np.asarray(v_of_blend_soc(blend_soc_arr), dtype=float)
+
+        window_lo = float(common_voltage[0])
+        window_hi = float(common_voltage[-1])
+        outside = np.flatnonzero((voltage < window_lo) | (voltage > window_hi))
+        if outside.size:
+            warnings.warn(
+                f"Blend SOC endpoint(s) map to "
+                f"{np.array2string(voltage[outside], precision=4)} V, outside the common "
+                f"voltage window [{window_lo:.4f}, {window_hi:.4f}] V of "
+                f"'{self.name}'. The component stoichiometries reported there are "
+                "clamped to the window edge.",
+                stacklevel=2,
+            )
 
         q1_of_v = interp1d(
-            self._common_voltage,
-            self._q_blend1_interp,
+            common_voltage,
+            q1_interp,
             kind="linear",
             bounds_error=False,
-            fill_value=0.0,
+            fill_value=(float(q1_interp[0]), float(q1_interp[-1])),
+            assume_sorted=True,
         )
         q2_of_v = interp1d(
-            self._common_voltage,
-            self._q_blend2_interp,
+            common_voltage,
+            q2_interp,
             kind="linear",
             bounds_error=False,
-            fill_value=0.0,
+            fill_value=(float(q2_interp[0]), float(q2_interp[-1])),
+            assume_sorted=True,
         )
 
         return {
@@ -323,26 +404,17 @@ class BlendElectrode:
     @property
     def common_voltage(self) -> np.ndarray:
         """Get the common voltage grid."""
-        if self._common_voltage is None:
-            self._prepare_blend_data()
-        assert self._common_voltage is not None
-        return self._common_voltage
+        return self._ensure_prepared()[0]
 
     @property
     def q_blend1_interp(self) -> np.ndarray:
         """Get interpolated Q values for blend1 on common voltage grid."""
-        if self._q_blend1_interp is None:
-            self._prepare_blend_data()
-        assert self._q_blend1_interp is not None
-        return self._q_blend1_interp
+        return self._ensure_prepared()[1]
 
     @property
     def q_blend2_interp(self) -> np.ndarray:
         """Get interpolated Q values for blend2 on common voltage grid."""
-        if self._q_blend2_interp is None:
-            self._prepare_blend_data()
-        assert self._q_blend2_interp is not None
-        return self._q_blend2_interp
+        return self._ensure_prepared()[2]
 
     def get_single_component(self, component: int = 1) -> ElectrodeOCP:
         """

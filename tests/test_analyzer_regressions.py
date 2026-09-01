@@ -1,9 +1,4 @@
-import sys
-from pathlib import Path
-
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pydma.analysis.degradation import calculate_degradation_modes
 from pydma.core.analyzer import DMAAnalyzer
@@ -109,12 +104,13 @@ def test_fitted_params_to_array_converts_optional_none_values_to_zero():
         gamma_blend2_ca=None,
         inhom_an=None,
         inhom_ca=None,
+        r_offset_ohm=None,
     )
 
     arr = params.to_array()
 
     assert arr.dtype.kind == "f"
-    np.testing.assert_allclose(arr, np.array([1.0, 0.0, 1.1, -0.1, 0.0, 0.0, 0.0, 0.0]))
+    np.testing.assert_allclose(arr, np.array([1.0, 0.0, 1.1, -0.1, 0.0, 0.0, 0.0, 0.0, 0.0]))
 
 
 def test_prepare_measured_data_keeps_matlab_q0_on_normalized_soc_axis():

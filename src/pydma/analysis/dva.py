@@ -7,6 +7,7 @@ from OCV data.
 
 import numpy as np
 
+from pydma.analysis._grid import uniform_voltage_grid
 from pydma.preprocessing.smoother import apply_filter
 
 
@@ -48,34 +49,11 @@ def calculate_dva(
     -----
     This replicates MATLAB's calculate_DVA.m function.
 
-    DIFFERENCE FROM MATLAB: Uses numpy gradient for cleaner derivative
-    calculation, but produces equivalent results.
-
     Examples
     --------
     >>> q_dva, ocv_dva, dva = calculate_dva(soc, voltage)
     """
-    soc = np.asarray(soc).flatten()
-    voltage = np.asarray(voltage).flatten()
-
-    # Remove NaN values
-    valid = ~(np.isnan(soc) | np.isnan(voltage))
-    soc = soc[valid]
-    voltage = voltage[valid]
-
-    # Ensure unique SOC values for interpolation
-    soc_unique, unique_idx = np.unique(soc, return_index=True)
-    voltage_unique = voltage[unique_idx]
-
-    # Determine number of points (default: match input unique SOC length)
-    if n_points is None:
-        n_points = len(soc_unique)
-
-    # Create uniform grid
-    q_dva = np.linspace(soc_unique.min(), soc_unique.max(), n_points)
-
-    # Interpolate voltage onto uniform grid
-    ocv_dva = np.interp(q_dva, soc_unique, voltage_unique)
+    q_dva, ocv_dva, n_points = uniform_voltage_grid(soc, voltage, n_points)
 
     # Calculate DVA (dV/dQ)
     dq = np.diff(q_dva)
@@ -84,7 +62,7 @@ def calculate_dva(
     # DIFFERENCE FROM MATLAB: MATLAB computes point-by-point in a loop
     # We use vectorized operations for efficiency
     dva = np.zeros(n_points)
-    dva[:-1] = dv / dq
+    dva[:-1] = np.where(np.abs(dq) > 1e-12, dv / dq, 0.0)
     dva[-1] = dva[-2]  # Set last value to previous (matching MATLAB)
 
     if smooth:
@@ -129,11 +107,26 @@ def precompute_dva(
 
     The Q0 multiplication normalizes DVA for comparison across cells
     with different capacities.
+
+    Raises
+    ------
+    ValueError
+        If the input is empty, or carries non-finite samples. Both would
+        resolve to a curve of zeros rather than to a derivative.
     """
     soc = np.asarray(soc).flatten()
     voltage = np.asarray(voltage).flatten()
 
     n = len(soc)
+    if n == 0:
+        raise ValueError("precompute_dva requires at least one sample; got an empty array.")
+
+    if not (np.all(np.isfinite(soc)) and np.all(np.isfinite(voltage))):
+        raise ValueError(
+            "precompute_dva requires finite soc/voltage; NaN/inf would silently "
+            "resolve to 0.0 in the discrete derivative below."
+        )
+
     dva = np.zeros(n)
 
     # Compute discrete derivative (MATLAB-compatible loop)

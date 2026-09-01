@@ -7,6 +7,7 @@ from OCV data.
 
 import numpy as np
 
+from pydma.analysis._grid import uniform_voltage_grid
 from pydma.preprocessing.smoother import apply_filter, assure_non_zero_dv
 
 
@@ -56,27 +57,7 @@ def calculate_ica(
     --------
     >>> q_ica, ocv_ica, ica = calculate_ica(soc, voltage)
     """
-    soc = np.asarray(soc).flatten()
-    voltage = np.asarray(voltage).flatten()
-
-    # Remove NaN values
-    valid = ~(np.isnan(soc) | np.isnan(voltage))
-    soc = soc[valid]
-    voltage = voltage[valid]
-
-    # Ensure unique SOC values for interpolation
-    soc_unique, unique_idx = np.unique(soc, return_index=True)
-    voltage_unique = voltage[unique_idx]
-
-    # Determine number of points (default: match input unique SOC length)
-    if n_points is None:
-        n_points = len(soc_unique)
-
-    # Create uniform grid
-    q_ica = np.linspace(soc_unique.min(), soc_unique.max(), n_points)
-
-    # Interpolate voltage onto uniform grid
-    ocv_ica = np.interp(q_ica, soc_unique, voltage_unique)
+    q_ica, ocv_ica, n_points = uniform_voltage_grid(soc, voltage, n_points)
 
     # Ensure non-zero dV for division
     ocv_ica = assure_non_zero_dv(ocv_ica)
@@ -88,12 +69,7 @@ def calculate_ica(
     # DIFFERENCE FROM MATLAB: MATLAB computes point-by-point in a loop
     # We use vectorized operations for efficiency
     ica = np.zeros(n_points)
-    for i in range(n_points - 1):
-        if abs(dv[i]) > 1e-12:
-            ica[i] = dq[i] / dv[i]
-        else:
-            ica[i] = 0
-
+    ica[:-1] = np.where(np.abs(dv) > 1e-12, dq / dv, 0.0)
     ica[-1] = ica[-2]  # Set last value to previous
 
     if smooth:
@@ -135,14 +111,29 @@ def precompute_ica(
 
     The Q0 division normalizes ICA for comparison across cells
     with different capacities.
+
+    Raises
+    ------
+    ValueError
+        If the input is empty, or carries non-finite samples. Both would
+        resolve to a curve of zeros rather than to a derivative.
     """
     soc = np.asarray(soc).flatten()
     voltage = np.asarray(voltage).flatten()
 
+    n = len(soc)
+    if n == 0:
+        raise ValueError("precompute_ica requires at least one sample; got an empty array.")
+
+    if not (np.all(np.isfinite(soc)) and np.all(np.isfinite(voltage))):
+        raise ValueError(
+            "precompute_ica requires finite soc/voltage; NaN/inf would silently "
+            "resolve to 0.0 in the discrete derivative below."
+        )
+
     # Ensure non-zero dV (MATLAB: assure_non_zero_dV is called in calculate_ICA)
     voltage = assure_non_zero_dv(voltage)
 
-    n = len(soc)
     ica = np.zeros(n)
 
     # Compute discrete derivative (MATLAB-compatible loop from calculate_ICA)

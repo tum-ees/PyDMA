@@ -1,2 +1,6 @@
 include CHANGELOG.md
 include CITATION.cff
+
+# setuptools ships tests/test_*.py by default but nothing else from that
+# directory, so the shared fixtures have to be named explicitly.
+include tests/conftest.py

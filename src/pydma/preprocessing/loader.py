@@ -5,6 +5,7 @@ This module provides functions for loading electrode OCP and pOCV data
 from various file formats with automatic column name detection.
 """
 
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -121,6 +122,12 @@ _DIRECTION_PATTERNS = {
     ],
 }
 
+# Field names a MATLAB aging-study table uses for the per-CU pOCV traces.
+_EXPLICIT_DIRECTION_KEYS = {
+    "charge": ["Testdata_pOCV_CH", "pOCV_CH", "charge", "Testdata_charge"],
+    "discharge": ["Testdata_pOCV_DCH", "pOCV_DCH", "discharge", "Testdata_discharge"],
+}
+
 
 def _normalize_name(name: Any) -> str:
     """Normalize a key/column name for fuzzy matching."""
@@ -148,16 +155,45 @@ def _find_matching_name(names: list[str], patterns: list[str]) -> str | None:
     return None
 
 
+def _warn_if_percent_axis(values: np.ndarray, label: str) -> None:
+    """Warn when an axis carries the signature of a 0..100 percent scale.
+
+    That signature is narrow on purpose: the span sits within a few percent of
+    100 and the axis starts at 0. A large-format cell has a capacity of 280 Ah
+    and a percent axis has a span of 100, so a plain "span is large" test would
+    keep flagging the cell and never the percentage.
+    """
+    span = float(values.max() - values.min())
+    if 95.0 <= span <= 105.0 and abs(float(values.min())) <= 0.05 * span:
+        warnings.warn(
+            f"{label} spans {span:.4g} from {float(values.min()):.4g}, which looks "
+            "like a 0..100 percent axis rather than an absolute capacity in Ah."
+        )
+
+
 def _extract_capacity_value(values: Any) -> float | None:
     """Extract a scalar capacity from a scalar, repeated series, or capacity trace."""
     arr = np.asarray(values, dtype=np.float64).flatten()
     arr = arr[np.isfinite(arr)]
     if arr.size == 0:
         return None
-    if arr.size == 1 or np.allclose(arr, arr[0]):
-        return float(arr[0])
 
     span = float(arr.max() - arr.min())
+    mean = float(arr.mean())
+    # A relative span decides constancy: instrument noise on an otherwise
+    # constant Ah column has span > 0 but must not be read as a capacity
+    # trace, which np.allclose's default rtol would do for large means.
+    is_constant = arr.size == 1 or (abs(span / mean) < 1e-3 if mean != 0 else span == 0)
+    if is_constant:
+        return float(arr[0])
+
+    _warn_if_percent_axis(arr, "Capacity trace")
+    if 1.0 < span <= 1.5:
+        warnings.warn(
+            f"Capacity trace spans {span:.3g}, which is ambiguous between a "
+            "normalized 0..1 axis and a small absolute capacity in Ah."
+        )
+
     if span > 0:
         return span
     return float(arr.max())
@@ -209,8 +245,29 @@ def _iter_mat_candidates(data: Any):
             queue.extend(list(current))
 
 
-def _extract_table_rows(container: dict[str, Any]) -> list[dict[str, Any]]:
-    """Convert a MATLAB table-like dict of columns to a list of row dicts."""
+def _is_cu_table(container: dict[str, Any]) -> bool:
+    """True when the column names identify a container as the CU table.
+
+    The BFS walks every struct in the file, most of which are metadata rather
+    than tables. Only the container this recognises is held to the
+    uniform-column-length rule below.
+    """
+    keys = list(container.keys())
+    if _find_matching_name(keys, ["CU", "cu"]) is None:
+        return False
+    return any(
+        _find_matching_name(keys, patterns) is not None
+        for patterns in _EXPLICIT_DIRECTION_KEYS.values()
+    )
+
+
+def _extract_table_rows(container: dict[str, Any], strict: bool = False) -> list[dict[str, Any]]:
+    """Convert a MATLAB table-like dict of columns to a list of row dicts.
+
+    Columns of differing length describe no table. Without ``strict`` that is
+    reported as "not a table" so the search continues past a metadata struct;
+    with it, on the container recognised as the CU table, it raises.
+    """
     if not container:
         return []
 
@@ -228,6 +285,15 @@ def _extract_table_rows(container: dict[str, Any]) -> list[dict[str, Any]]:
     if row_count <= 1:
         return []
 
+    for key, length in lengths.items():
+        if length != row_count:
+            if not strict:
+                return []
+            raise ValueError(
+                f"Column {key!r} has length {length}, expected {row_count} to match "
+                "the table's other columns."
+            )
+
     rows = []
     for idx in range(row_count):
         row: dict[str, Any] = {}
@@ -235,10 +301,8 @@ def _extract_table_rows(container: dict[str, Any]) -> list[dict[str, Any]]:
             arr = np.asarray(value)
             if arr.ndim == 0:
                 row[key] = arr.item()
-            elif len(arr) == row_count:
-                row[key] = arr[idx]
             else:
-                row[key] = value
+                row[key] = arr[idx]
         rows.append(row)
     return rows
 
@@ -280,6 +344,12 @@ def _extract_fullcell_capacity_from_mapping(
 
     span = float(x_values.max() - x_values.min())
     if span > 1.0 + 1e-9:
+        _warn_if_percent_axis(x_values, "Full-cell x-axis")
+        if span <= 1.5:
+            warnings.warn(
+                f"Full-cell x-axis spans {span:.3g}, which is ambiguous between a "
+                "normalized 0..1 axis and a small absolute capacity in Ah."
+            )
         return span
     return None
 
@@ -289,6 +359,8 @@ def _coerce_cu_name(value: Any) -> str:
     arr = np.asarray(value).flatten()
     if arr.size == 0:
         raise ValueError("Empty CU identifier encountered in aging-study data.")
+    if arr.size > 1:
+        warnings.warn(f"CU identifier has {arr.size} elements; using the first one, {arr[0]!r}.")
 
     scalar = arr[0]
     if isinstance(scalar, bytes):
@@ -315,15 +387,11 @@ def _cu_sort_key(value: str) -> tuple[int, str]:
 def _extract_aging_study_from_mat(
     mat_data: dict[str, Any],
     direction: str,
+    source: str | Path | None = None,
 ) -> dict[str, tuple[np.ndarray, np.ndarray, float | None]]:
     """Extract multi-CU pOCV data from a single MATLAB file."""
     results: dict[str, tuple[np.ndarray, np.ndarray, float | None]] = {}
     direction = direction.lower()
-
-    explicit_direction_keys = {
-        "charge": ["Testdata_pOCV_CH", "pOCV_CH", "charge", "Testdata_charge"],
-        "discharge": ["Testdata_pOCV_DCH", "pOCV_DCH", "discharge", "Testdata_discharge"],
-    }
 
     for candidate in _iter_mat_candidates(mat_data):
         container = _coerce_mat_container(candidate)
@@ -340,7 +408,7 @@ def _extract_aging_study_from_mat(
             parsed_any = False
             for cu_key in sorted(direct_cu_keys, key=_cu_sort_key):
                 soc, voltage, capacity = _extract_soc_voltage_from_mat(
-                    container[cu_key], "fullcell"
+                    container[cu_key], "fullcell", source=source
                 )
                 results[_coerce_cu_name(cu_key)] = (soc, voltage, capacity)
                 parsed_any = True
@@ -348,7 +416,7 @@ def _extract_aging_study_from_mat(
                 return results
 
         # Table-like dict of columns.
-        rows = _extract_table_rows(container)
+        rows = _extract_table_rows(container, strict=_is_cu_table(container))
         if rows:
             parsed_any = False
             for row in rows:
@@ -360,7 +428,7 @@ def _extract_aging_study_from_mat(
 
                 data_key = _find_matching_name(
                     list(row_container.keys()),
-                    explicit_direction_keys[direction],
+                    _EXPLICIT_DIRECTION_KEYS[direction],
                 )
                 if data_key is None:
                     continue
@@ -368,6 +436,7 @@ def _extract_aging_study_from_mat(
                 soc, voltage, capacity = _extract_soc_voltage_from_mat(
                     row_container[data_key],
                     "fullcell",
+                    source=source,
                 )
                 if capacity is None:
                     capacity = _extract_capacity_value(
@@ -467,7 +536,7 @@ def auto_detect_columns(
 
 
 def _extract_soc_voltage_from_mat(
-    data: Any, electrode_type: str
+    data: Any, electrode_type: str, source: str | Path | None = None
 ) -> tuple[np.ndarray, np.ndarray, float | None]:
     """
     Extract SOC and voltage from MATLAB .mat file structure.
@@ -478,6 +547,8 @@ def _extract_soc_voltage_from_mat(
         Loaded .mat file data.
     electrode_type : str
         Type of electrode.
+    source : str or Path, optional
+        Originating file path, used only to identify the file in error messages.
 
     Returns
     -------
@@ -502,6 +573,13 @@ def _extract_soc_voltage_from_mat(
 
         soc = np.asarray(mapping[x_key], dtype=np.float64).flatten()
         voltage = np.asarray(mapping[voltage_key], dtype=np.float64).flatten()
+        if len(soc) != len(voltage):
+            raise ValueError(
+                f"SOC/capacity and voltage columns have mismatched lengths in "
+                f"{source if source is not None else '<mat data>'}: "
+                f"keys ({x_key!r}, {voltage_key!r}), len(soc)={len(soc)}, "
+                f"len(voltage)={len(voltage)}."
+            )
         if electrode_type == "fullcell":
             capacity = _extract_fullcell_capacity_from_mapping(mapping, x_key)
         else:
@@ -524,6 +602,7 @@ def load_ocp(
     capacity_col: str | None = None,
     smooth: bool = False,
     smooth_window: int = 30,
+    csv_kwargs: dict | None = None,
 ) -> "ElectrodeOCP":
     """
     Load electrode OCP data from file.
@@ -547,6 +626,9 @@ def load_ocp(
         Whether to smooth the data after loading.
     smooth_window : int
         Smoothing window size.
+    csv_kwargs : dict, optional
+        Extra keyword arguments passed through to ``pd.read_csv`` unchanged.
+        For German-locale exports: ``csv_kwargs={"sep": ";", "decimal": ","}``.
 
     Returns
     -------
@@ -570,7 +652,7 @@ def load_ocp(
 
     # Load based on file type
     if ext == ".csv":
-        df = pd.read_csv(filepath)
+        df = pd.read_csv(filepath, **(csv_kwargs or {}))
     elif ext in (".xlsx", ".xls"):
         df = pd.read_excel(filepath)
     elif ext == ".mat":
@@ -594,7 +676,16 @@ def load_ocp(
             else:
                 main_var = mat_data
 
-        soc, voltage, capacity = _extract_soc_voltage_from_mat(main_var, electrode_type)
+        soc, voltage, capacity = _extract_soc_voltage_from_mat(
+            main_var, electrode_type, source=filepath
+        )
+
+        # Clean data - remove NaN, matching the CSV/Excel path below
+        valid = ~(np.isnan(soc) | np.isnan(voltage))
+        soc = soc[valid]
+        voltage = voltage[valid]
+        if len(soc) < 2:
+            raise ValueError(f"Fewer than 2 valid (non-NaN) SOC/voltage points in {filepath}.")
 
         # Create electrode directly for .mat files
         base_type = electrode_type.replace("Blend2", "")
@@ -620,14 +711,18 @@ def load_ocp(
         voltage_col = voltage_col or detected["voltage"]
         capacity_col = capacity_col or detected.get("capacity")
 
-    soc = df[soc_col].values
-    voltage = df[voltage_col].values
+    # Coerce to numeric first: text cells (e.g. from German-locale exports)
+    # leave an object-dtype column that makes np.isnan raise a cryptic TypeError below.
+    soc = pd.to_numeric(df[soc_col], errors="coerce").to_numpy(dtype=np.float64)
+    voltage = pd.to_numeric(df[voltage_col], errors="coerce").to_numpy(dtype=np.float64)
     capacity = _extract_capacity_value(df[capacity_col].values) if capacity_col else None
 
     # Clean data - remove NaN
     valid = ~(np.isnan(soc) | np.isnan(voltage))
     soc = soc[valid]
     voltage = voltage[valid]
+    if len(soc) < 2:
+        raise ValueError(f"Fewer than 2 valid (non-NaN) SOC/voltage points in {filepath}.")
 
     base_type = electrode_type.replace("Blend2", "")
     ocp = ElectrodeOCP(
@@ -651,6 +746,7 @@ def load_pocv(
     capacity_col: str | None = None,
     smooth: bool = False,
     smooth_window: int = 30,
+    csv_kwargs: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float | None]:
     """
     Load pseudo-OCV (pOCV) data from file.
@@ -669,6 +765,9 @@ def load_pocv(
         Whether to smooth the data.
     smooth_window : int
         Smoothing window size.
+    csv_kwargs : dict, optional
+        Extra keyword arguments passed through to ``pd.read_csv`` unchanged.
+        For German-locale exports: ``csv_kwargs={"sep": ";", "decimal": ","}``.
 
     Returns
     -------
@@ -689,7 +788,7 @@ def load_pocv(
     ext = filepath.suffix.lower()
 
     if ext == ".csv":
-        df = pd.read_csv(filepath)
+        df = pd.read_csv(filepath, **(csv_kwargs or {}))
     elif ext in (".xlsx", ".xls"):
         df = pd.read_excel(filepath)
     elif ext == ".mat":
@@ -699,7 +798,16 @@ def load_pocv(
         mat_data = loadmat(str(filepath), squeeze_me=True, struct_as_record=False)
         mat_data = {k: v for k, v in mat_data.items() if not k.startswith("__")}
 
-        soc, voltage, capacity = _extract_soc_voltage_from_mat(mat_data, "fullcell")
+        soc, voltage, capacity = _extract_soc_voltage_from_mat(
+            mat_data, "fullcell", source=filepath
+        )
+
+        # Clean data - remove NaN, matching the CSV/Excel path below
+        valid = ~(np.isnan(soc) | np.isnan(voltage))
+        soc = soc[valid]
+        voltage = voltage[valid]
+        if len(soc) < 2:
+            raise ValueError(f"Fewer than 2 valid (non-NaN) SOC/voltage points in {filepath}.")
 
         if smooth:
             voltage = smooth_lowess(voltage, soc, frac=smooth_window / len(soc))
@@ -715,13 +823,17 @@ def load_pocv(
         voltage_col = voltage_col or detected["voltage"]
         capacity_col = capacity_col or detected.get("capacity")
 
-    soc = df[soc_col].values
-    voltage = df[voltage_col].values
+    # Coerce to numeric first: text cells (e.g. from German-locale exports)
+    # leave an object-dtype column that makes np.isnan raise a cryptic TypeError below.
+    soc = pd.to_numeric(df[soc_col], errors="coerce").to_numpy(dtype=np.float64)
+    voltage = pd.to_numeric(df[voltage_col], errors="coerce").to_numpy(dtype=np.float64)
 
     # Clean data
     valid = ~(np.isnan(soc) | np.isnan(voltage))
     soc = soc[valid]
     voltage = voltage[valid]
+    if len(soc) < 2:
+        raise ValueError(f"Fewer than 2 valid (non-NaN) SOC/voltage points in {filepath}.")
 
     # Get capacity
     if capacity_col and capacity_col in df.columns:
@@ -735,10 +847,73 @@ def load_pocv(
     return soc, voltage, capacity
 
 
+_CU_FILE_EXTENSIONS = (".csv", ".mat", ".xlsx")
+
+
+def _discover_cu_candidates(data_path: Path, cu_pattern: str) -> dict[int, Path]:
+    """Find every CU directory/file that actually exists for a `{i}`-style pattern.
+
+    Returns a mapping from numeric CU index to its resolved path. A CU
+    directory takes precedence over a same-index file; among file
+    candidates for the same index, the first matching extension in
+    `_CU_FILE_EXTENSIONS` wins.
+
+    Two names of the same kind can resolve to one index — ``CU1`` and ``CU01``
+    both read as 1 — in which case only one of them is loaded and the
+    collision is warned about.
+    """
+    if "{i}" not in cu_pattern:
+        raise ValueError(f"cu_pattern must contain the '{{i}}' placeholder, got {cu_pattern!r}")
+    prefix, suffix = cu_pattern.split("{i}", 1)
+
+    def _index_from_name(name: str) -> int | None:
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            return None
+        index_text = name[len(prefix) : len(name) - len(suffix)]
+        return int(index_text) if index_text.isdigit() else None
+
+    dir_candidates: dict[int, Path] = {}
+    file_candidates: dict[int, dict[str, Path]] = {}
+
+    def _warn_collision(index: int, kept: Path, dropped: Path) -> None:
+        warnings.warn(
+            f"CU index {index} is claimed by both '{dropped.name}' and "
+            f"'{kept.name}'; only '{kept.name}' is loaded."
+        )
+
+    for entry in data_path.iterdir():
+        if entry.is_dir():
+            index = _index_from_name(entry.name)
+            if index is not None:
+                if index in dir_candidates:
+                    _warn_collision(index, entry, dir_candidates[index])
+                dir_candidates[index] = entry
+        elif entry.suffix.lower() in _CU_FILE_EXTENSIONS:
+            index = _index_from_name(entry.stem)
+            if index is not None:
+                by_ext = file_candidates.setdefault(index, {})
+                ext = entry.suffix.lower()
+                if ext in by_ext:
+                    _warn_collision(index, entry, by_ext[ext])
+                by_ext[ext] = entry
+
+    candidates: dict[int, Path] = dict(dir_candidates)
+    for index, by_ext in file_candidates.items():
+        if index in candidates:
+            continue
+        for ext in _CU_FILE_EXTENSIONS:
+            if ext in by_ext:
+                candidates[index] = by_ext[ext]
+                break
+
+    return candidates
+
+
 def load_aging_study(
     data_path: str | Path,
     direction: str = "charge",
     cu_pattern: str = "CU{i}",
+    csv_kwargs: dict | None = None,
 ) -> dict[str, tuple[np.ndarray, np.ndarray, float | None]]:
     """
     Load multiple pOCV measurements from an aging study.
@@ -751,6 +926,9 @@ def load_aging_study(
         'charge' or 'discharge'.
     cu_pattern : str
         Pattern for CU folder/file names. Use {i} for CU index.
+    csv_kwargs : dict, optional
+        Extra keyword arguments passed through to ``pd.read_csv`` unchanged.
+        For German-locale exports: ``csv_kwargs={"sep": ";", "decimal": ","}``.
 
     Returns
     -------
@@ -776,49 +954,77 @@ def load_aging_study(
 
             mat_data = loadmat(str(data_path), squeeze_me=True, struct_as_record=False)
             mat_data = {k: v for k, v in mat_data.items() if not k.startswith("__")}
-            return _extract_aging_study_from_mat(mat_data, direction=direction)
+            return _extract_aging_study_from_mat(mat_data, direction=direction, source=data_path)
         raise NotImplementedError(
             "Loading all CUs from a single non-MATLAB file is not implemented. "
             "Please provide a directory of per-CU files or a MATLAB aging-study table."
         )
-    else:
-        # Directory with CU subfolders
-        i = 1
-        while True:
-            cu_name = cu_pattern.format(i=i)
-            cu_path = data_path / cu_name
 
-            if not cu_path.exists():
-                # Try as file
-                for ext in [".csv", ".mat", ".xlsx"]:
-                    if (data_path / f"{cu_name}{ext}").exists():
-                        cu_path = data_path / f"{cu_name}{ext}"
-                        break
+    # Directory with CU subfolders/files: collect every candidate that
+    # actually exists instead of stopping at the first missing index.
+    candidates = _discover_cu_candidates(data_path, cu_pattern)
+    indices = sorted(candidates.keys())
+    if indices:
+        missing = sorted(set(range(indices[0], indices[-1] + 1)) - set(indices))
+        if missing:
+            warnings.warn(
+                f"Aging study at {data_path} is missing CU indices {missing} between "
+                f"{cu_pattern.format(i=indices[0])} and {cu_pattern.format(i=indices[-1])}."
+            )
+
+    for index in indices:
+        cu_name = cu_pattern.format(i=index)
+        cu_path = candidates[index]
+
+        if cu_path.is_dir():
+            # Look for pOCV file in directory
+            selected_files: list[Path] = []
+            for pattern in _DIRECTION_PATTERNS[direction]:
+                files = sorted(cu_path.glob(pattern))
+                if direction == "charge":
+                    # "charge" is a substring of "discharge". Exclude
+                    # explicitly discharge-labelled files so selection does
+                    # not depend on filesystem iteration order.
+                    files = [
+                        file
+                        for file in files
+                        if "discharge" not in file.stem.lower() and "dch" not in file.stem.lower()
+                    ]
                 else:
+                    # Mirror the charge-side filter: a catch-all pattern can
+                    # just as easily resolve to a charge-only file, so drop
+                    # anything carrying an explicit charge-only marker. The
+                    # "_ch" marker is read only where the stem says nothing
+                    # about discharge, so a name such as
+                    # "pocv_discharge_checkup" keeps its "_ch" from "_checkup"
+                    # without being taken for a charge file.
+                    files = [
+                        file
+                        for file in files
+                        if not (
+                            "charge" in file.stem.lower() and "discharge" not in file.stem.lower()
+                        )
+                        and not (
+                            "_ch" in file.stem.lower()
+                            and "dch" not in file.stem.lower()
+                            and "discharge" not in file.stem.lower()
+                        )
+                    ]
+                if files:
+                    selected_files = files
                     break
 
-            if cu_path.is_dir():
-                # Look for pOCV file in directory
-                for pattern in _DIRECTION_PATTERNS[direction]:
-                    files = sorted(cu_path.glob(pattern))
-                    if direction == "charge":
-                        # "charge" is a substring of "discharge". Exclude
-                        # explicitly discharge-labelled files so selection does
-                        # not depend on filesystem iteration order.
-                        files = [
-                            file
-                            for file in files
-                            if "discharge" not in file.stem.lower()
-                            and "dch" not in file.stem.lower()
-                        ]
-                    if files:
-                        soc, voltage, capacity = load_pocv(files[0])
-                        results[cu_name] = (soc, voltage, capacity)
-                        break
-            else:
-                soc, voltage, capacity = load_pocv(cu_path)
-                results[cu_name] = (soc, voltage, capacity)
+            if not selected_files:
+                warnings.warn(
+                    f"No {direction} pOCV file found in {cu_path} "
+                    f"(searched patterns: {_DIRECTION_PATTERNS[direction]}); skipping."
+                )
+                continue
 
-            i += 1
+            soc, voltage, capacity = load_pocv(selected_files[0], csv_kwargs=csv_kwargs)
+            results[cu_name] = (soc, voltage, capacity)
+        else:
+            soc, voltage, capacity = load_pocv(cu_path, csv_kwargs=csv_kwargs)
+            results[cu_name] = (soc, voltage, capacity)
 
     return results

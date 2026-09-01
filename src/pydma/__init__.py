@@ -53,7 +53,8 @@ from pydma.preprocessing.loader import auto_detect_columns, load_aging_study, lo
 from pydma.preprocessing.smoother import apply_filter, smooth_lowess, smooth_savgol
 
 # Silicon curve generation
-from pydma.silicon.generator import SiliconCurveParams, generate_si_curve
+from pydma.silicon.generator import SiliconCurveResult, generate_si_curve
+from pydma.silicon.strict_sto import pchip_resample_for_pybamm
 
 # Electrode balancing export (PyDMA fit + cell geometry -> c_max / c_init).
 # Simulator-agnostic; ElectrodeBalancing.pybamm_overrides() is the only
@@ -61,6 +62,7 @@ from pydma.silicon.generator import SiliconCurveParams, generate_si_curve
 from pydma.utils.balancing import (
     CellGeometry,
     ElectrodeBalancing,
+    apply_aging,
     derive_balancing,
     derive_balancing_from_result,
 )
@@ -129,10 +131,12 @@ __all__ = [
     "DMAPlotter",
     # Silicon
     "generate_si_curve",
-    "SiliconCurveParams",
+    "SiliconCurveResult",
+    "pchip_resample_for_pybamm",
     # Electrode balancing export
     "CellGeometry",
     "ElectrodeBalancing",
     "derive_balancing",
     "derive_balancing_from_result",
+    "apply_aging",
 ]

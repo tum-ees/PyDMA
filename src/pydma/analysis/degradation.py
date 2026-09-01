@@ -44,9 +44,11 @@ def calculate_degradation_modes(
     Parameters
     ----------
     params : np.ndarray
-        8-element parameter vector:
-        [alpha_an, beta_an, alpha_ca, beta_ca,
-         gamma_blend2_an, gamma_blend2_ca, inhom_an, inhom_ca]
+        9-element parameter vector:
+        [alpha_an, beta_an, alpha_ca, beta_ca, gamma_blend2_an,
+         gamma_blend2_ca, inhom_an, inhom_ca, r_offset]
+        Only [0..5] are read here, and a shorter vector is padded with zeros,
+        so an 8-element vector is equally acceptable.
     capa_actual : float
         Actual cell capacity for this CU.
     capa_anode_init : float
@@ -124,28 +126,30 @@ def calculate_degradation_modes(
     lam_cathode_blend1 = _safe_loss(capa_cathode_blend1_init, capa_cathode_blend1)
 
     # Overall anode and cathode degradation
-    lam_anode = (capa_anode_init - capa_anode) / capa_anode_init
-    lam_cathode = (capa_cathode_init - capa_cathode) / capa_cathode_init
+    lam_anode = _safe_loss(capa_anode_init, capa_anode)
+    lam_cathode = _safe_loss(capa_cathode_init, capa_cathode)
 
     # Inventory loss calculation
     capa_inventory = (alpha_cathode + beta_cathode - beta_anode) * capa_actual
-    lli = (capa_inventory_init - capa_inventory) / capa_inventory_init
+    lli = _safe_loss(capa_inventory_init, capa_inventory)
 
     # Handle reverse fitting
     # DIFFERENCE FROM MATLAB: Same logic, but uses Python syntax
     if fit_reverse:
-        lam_cathode = -lam_cathode * capa_cathode_init / capa_cathode if capa_cathode != 0 else 0
-        lam_anode = -lam_anode * capa_anode_init / capa_anode if capa_anode != 0 else 0
+        lam_cathode = (
+            -lam_cathode * capa_cathode_init / capa_cathode if abs(capa_cathode) > 1e-12 else 0
+        )
+        lam_anode = -lam_anode * capa_anode_init / capa_anode if abs(capa_anode) > 1e-12 else 0
 
-        if capa_anode_blend1 != 0:
+        if abs(capa_anode_blend1) > 1e-12:
             lam_anode_blend1 = -lam_anode_blend1 * capa_anode_blend1_init / capa_anode_blend1
-        if capa_anode_blend2 != 0:
+        if abs(capa_anode_blend2) > 1e-12:
             lam_anode_blend2 = -lam_anode_blend2 * capa_anode_blend2_init / capa_anode_blend2
-        if capa_cathode_blend1 != 0:
+        if abs(capa_cathode_blend1) > 1e-12:
             lam_cathode_blend1 = (
                 -lam_cathode_blend1 * capa_cathode_blend1_init / capa_cathode_blend1
             )
-        if capa_cathode_blend2 != 0:
+        if abs(capa_cathode_blend2) > 1e-12:
             lam_cathode_blend2 = (
                 -lam_cathode_blend2 * capa_cathode_blend2_init / capa_cathode_blend2
             )
@@ -177,7 +181,7 @@ def _safe_loss(init_val: float, current_val: float) -> float:
     float
         Relative loss (init - current) / init, or 0 if init is 0.
     """
-    if init_val == 0:
+    if abs(init_val) < 1e-12:
         return 0.0
     return (init_val - current_val) / init_val
 
@@ -191,17 +195,32 @@ def calculate_mse(
 
     Used by OCV/DVA/ICA fitting (objectives.py) and post-fit metrics (analyzer.py).
     For RMSE, take np.sqrt() of the result.
+
+    An empty mask (mask.sum() == 0) returns inf, not 0.0: a fit evaluated
+    over zero points is never a perfect fit. objectives.py/analyzer.py
+    already guard against an all-false ROI mask before calling this, so the
+    inf return is a safeguard for direct callers rather than the normal path.
+
+    ``mask`` is read as boolean. An integer mask would otherwise reach ``~mask``
+    as a bitwise complement, whose 0/1 entries are all truthy, and every point
+    would be excluded from the sum.
     """
     measured = np.asarray(measured).flatten()
     calculated = np.asarray(calculated).flatten()
 
+    if measured.shape != calculated.shape:
+        raise ValueError(
+            f"measured and calculated must have the same shape, "
+            f"got {measured.shape} and {calculated.shape}."
+        )
+
     if mask is None:
         mask = np.ones(len(measured), dtype=bool)
     else:
-        mask = np.asarray(mask).flatten()
+        mask = np.asarray(mask, dtype=bool).flatten()
 
     if mask.sum() == 0:
-        return 0.0
+        return float("inf")
 
     # MSE only over masked (ROI) points
     diff_sq = (calculated - measured) ** 2
@@ -219,7 +238,8 @@ def calculate_capacity_metrics(
     Parameters
     ----------
     params : np.ndarray
-        8-element parameter vector.
+        9-element parameter vector; only [0..5] are read, and a shorter vector
+        is padded with zeros.
     capa_actual : float
         Actual cell capacity.
 

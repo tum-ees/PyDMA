@@ -5,13 +5,16 @@ This module provides the ElectrodeOCP class for handling electrode
 open circuit potential data for anodes and cathodes.
 """
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.interpolate import interp1d
 
 
-@dataclass
+# eq=False: the numpy fields would make a generated __eq__ raise on the
+# ambiguous truth value of an array comparison.
+@dataclass(eq=False)
 class ElectrodeOCP:
     """
     Electrode Open Circuit Potential data container.
@@ -66,6 +69,20 @@ class ElectrodeOCP:
         if len(self.soc) < 2:
             raise ValueError("Need at least 2 data points")
 
+        # Non-finite samples have to be rejected here rather than left to a later
+        # check: every comparison against NaN is False, so a NaN slips past the
+        # ordering, the normalisation and the orientation decision below and only
+        # surfaces as a silently poisoned interpolant.
+        for axis_name, values in (("soc", self.soc), ("voltage", self.voltage)):
+            bad = np.flatnonzero(~np.isfinite(values))
+            if bad.size:
+                i = int(bad[0])
+                raise ValueError(
+                    f"{axis_name} must be finite for electrode '{self.name}'; "
+                    f"sample {i} is {float(values[i])!r} "
+                    f"({int(bad.size)} non-finite sample(s) in total)."
+                )
+
         # Ensure SOC is increasing
         if self.soc[0] > self.soc[-1]:
             self.soc = np.flip(self.soc)
@@ -77,6 +94,14 @@ class ElectrodeOCP:
             if soc_min < -0.01 or soc_max > 1.01:
                 # SOC is not in 0-1 range, normalize
                 self.soc = (self.soc - soc_min) / (soc_max - soc_min)
+
+        if self.soc.min() < 0.0 or self.soc.max() > 1.0:
+            warnings.warn(
+                f"Electrode '{self.name}' keeps a SOC axis outside [0, 1]: "
+                f"[{float(self.soc.min()):.6g}, {float(self.soc.max()):.6g}]. "
+                "It is within the normalisation tolerance, so it is used as given.",
+                stacklevel=2,
+            )
 
         if self.electrode_type not in ("anode", "cathode"):
             raise ValueError(
@@ -97,41 +122,53 @@ class ElectrodeOCP:
         # We validate and auto-correct to PyDMA's internal convention.
         # =============================================================================
 
-        # Calculate average slope to check convention
-        slope = np.polyfit(self.soc, self.voltage, 1)[0]
+        # The convention is a statement about the two ends of the curve, so it is
+        # read off the endpoints of the SOC-sorted data. A least-squares slope
+        # answers a different question and can be dominated by a plateau in the
+        # middle of the curve.
+        v_span = float(self.voltage[-1] - self.voltage[0])
+        if abs(v_span) < 1e-3:
+            raise ValueError(
+                f"Cannot determine the OCP orientation of electrode '{self.name}': "
+                f"the curve is flat, {float(self.voltage[0]):.6g} V at the lowest SOC "
+                f"and {float(self.voltage[-1]):.6g} V at the highest differ by only "
+                f"{v_span:.3g} V (at least 1e-3 V required)."
+            )
 
-        # Anode: voltage should DECREASE with increasing SOC (lithiation)
-        # If voltage[0] < voltage[-1], it's increasing → flip SOC
+        # Anode: voltage should DECREASE with increasing SOC (lithiation).
+        # Cathode: PyDMA's internal convention has it INCREASE with SOC.
         if self.electrode_type == "anode":
-            if slope > 0:  # Voltage is INCREASING with SOC (wrong convention)
-                self.soc = 1.0 - self.soc
-                # Restore increasing SOC order after transformation
-                self.soc = np.flip(self.soc)
-                self.voltage = np.flip(self.voltage)
+            needs_mirror = v_span > 0
+        else:
+            needs_mirror = v_span < 0
 
-        # Cathode: Standard convention has voltage DECREASING with stoichiometry
-        # PyDMA expects voltage INCREASING with SOC (internal convention)
-        # If slope < 0 (voltage decreasing with SOC), it's standard convention → flip to PyDMA
-        if self.electrode_type == "cathode":
-            if slope < 0:  # Voltage is DECREASING with SOC (standard convention)
-                self.soc = 1.0 - self.soc
-                # Restore increasing SOC order after transformation
-                self.soc = np.flip(self.soc)
-                self.voltage = np.flip(self.voltage)
+        if needs_mirror:
+            # Reflect about 0.5. The soc axis carries absolute stoichiometry, so
+            # the reflection point is the stoichiometry range itself: mirroring a
+            # partial-window curve about its own centre instead would keep the
+            # window width but move every absolute sto value, which the fit does
+            # not notice and every sto-referenced export gets wrong.
+            self.soc = 1.0 - self.soc
+            # Restore increasing SOC order after transformation
+            self.soc = np.flip(self.soc)
+            self.voltage = np.flip(self.voltage)
 
         # Build interpolator
         self._build_interpolator()
 
     def _build_interpolator(self):
-        """Build the interpolation function."""
-        # DIFFERENCE FROM MATLAB: MATLAB uses interp1 with 'linear' and 0 for extrapolation
-        # We use scipy interp1d with bounds_error=False and fill_value=0
+        """Build the interpolation function.
+
+        Queries outside the SOC support are clamped to the potentials at the two
+        ends of the support. ``__post_init__`` leaves the SOC axis sorted
+        ascending, so those are ``voltage[0]`` and ``voltage[-1]``.
+        """
         self._interpolator = interp1d(
             self.soc,
             self.voltage,
             kind="linear",
             bounds_error=False,
-            fill_value=0.0,  # Return 0 outside bounds, matching MATLAB behavior
+            fill_value=(self.voltage[0], self.voltage[-1]),
         )
 
     def interpolate(self, soc_query: float | np.ndarray) -> np.ndarray:
@@ -150,37 +187,16 @@ class ElectrodeOCP:
 
         Notes
         -----
-        DIFFERENCE FROM MATLAB: MATLAB's interp1(x,y,xq,'linear',0) returns 0
-        for values outside the range. We replicate this behavior.
+        Queries outside the SOC support are clamped to the potentials at the two
+        ends of the support rather than extrapolated.
         """
-        assert (
-            self._interpolator is not None
-        ), "ElectrodeOCP not initialised; call _build_interpolator first"
+        if self._interpolator is None:
+            raise RuntimeError(
+                "ElectrodeOCP has no interpolator. __post_init__ builds one for every "
+                "instance, so this signals an object that bypassed initialisation. "
+                "Raised rather than asserted so the invariant survives python -O."
+            )
         return np.asarray(self._interpolator(soc_query))
-
-    def get_potential_at_scaled_soc(self, soc: np.ndarray, alpha: float, beta: float) -> np.ndarray:
-        """
-        Get potential at scaled SOC: alpha * soc + beta.
-
-        This is the core operation for OCV reconstruction where:
-        U_electrode(SOC) = U(alpha * SOC + beta)
-
-        Parameters
-        ----------
-        soc : np.ndarray
-            Full-cell SOC grid (typically 0-1).
-        alpha : float
-            Scaling factor (capacity ratio).
-        beta : float
-            Offset (SOC shift).
-
-        Returns
-        -------
-        np.ndarray
-            Electrode potential at scaled SOC values.
-        """
-        scaled_soc = alpha * soc + beta
-        return self.interpolate(scaled_soc)
 
     def resample(self, n_points: int = 1000) -> "ElectrodeOCP":
         """
@@ -215,7 +231,7 @@ class ElectrodeOCP:
         Parameters
         ----------
         window : int
-            Smoothing window size.
+            Smoothing window size, in samples. Must be positive.
         method : str
             Smoothing method: 'lowess' or 'savgol'.
 
@@ -224,6 +240,11 @@ class ElectrodeOCP:
         ElectrodeOCP
             New ElectrodeOCP with smoothed data.
 
+        Raises
+        ------
+        ValueError
+            If ``window`` is not positive, or ``method`` is unknown.
+
         Notes
         -----
         DIFFERENCE FROM MATLAB: MATLAB uses smooth(y, n, 'lowess').
@@ -231,11 +252,17 @@ class ElectrodeOCP:
         """
         from pydma.preprocessing.smoother import smooth_lowess, smooth_savgol
 
+        if window <= 0:
+            raise ValueError(f"smooth() needs a positive window, got {window!r}.")
+
         if method == "lowess":
+            # LOWESS needs a fraction in (0, 1], so a window wider than the curve
+            # is capped rather than passed on.
+            frac = min(window / len(self.voltage), 1.0)
             smoothed_voltage = smooth_lowess(
                 self.voltage,
                 self.soc,
-                frac=window / len(self.voltage),
+                frac=frac,
             )
         elif method == "savgol":
             smoothed_voltage = smooth_savgol(self.voltage, window)
@@ -264,7 +291,7 @@ class ElectrodeOCP:
 
     def get_soc_at_voltage(self, voltage: float) -> float | None:
         """
-        Get approximate SOC at a given voltage.
+        Get the SOC at a given voltage by inverting the OCP curve.
 
         Parameters
         ----------
@@ -274,20 +301,38 @@ class ElectrodeOCP:
         Returns
         -------
         float or None
-            Approximate SOC, or None if voltage is out of range.
+            Linearly interpolated SOC, or None if the voltage lies outside the
+            curve's voltage range.
+
+        Raises
+        ------
+        ValueError
+            If the voltage axis reverses direction. V -> SOC is then not a
+            function and the inversion has no defined answer.
 
         Notes
         -----
         This is used for blend electrode calculations where we need
         to find Q(V) from V(Q) data.
         """
+        v = np.asarray(self.voltage, dtype=float)
+        signs = np.sign(np.diff(v))
+        nonzero = signs[signs != 0]
+        if nonzero.size and not bool(np.all(nonzero == nonzero[0])):
+            first = int(np.flatnonzero(signs == -nonzero[0])[0])
+            raise ValueError(
+                f"Cannot invert electrode '{self.name}': its voltage axis is not "
+                f"monotone, it reverses between samples {first} and {first + 1} "
+                f"({float(v[first]):.6g} V -> {float(v[first + 1]):.6g} V)."
+            )
+
         v_min, v_max = self.get_voltage_range()
         if voltage < v_min or voltage > v_max:
             return None
 
-        # Find closest voltage and interpolate
-        idx = np.argmin(np.abs(self.voltage - voltage))
-        return float(self.soc[idx])
+        if nonzero.size and nonzero[0] < 0:
+            return float(np.interp(voltage, v[::-1], self.soc[::-1]))
+        return float(np.interp(voltage, v, self.soc))
 
     def copy(self) -> "ElectrodeOCP":
         """

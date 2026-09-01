@@ -19,17 +19,15 @@ re-run ``tests/_golden_probe.py`` and replace the JSON.
 
 import json
 import math
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "src"))
+from pydma import DMAAnalyzer, DMAConfig, ElectrodeOCP, load_ocp
 
-from pydma import DMAAnalyzer, DMAConfig, ElectrodeOCP, load_ocp  # noqa: E402
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 INPUT_DIR = REPO_ROOT / "notebooks" / "TestData" / "InputData"
 POCV_DIR = REPO_ROOT / "notebooks" / "TestData"

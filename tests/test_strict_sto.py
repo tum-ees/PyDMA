@@ -1,4 +1,7 @@
-"""Regression tests for `pydma.silicon.strict_sto._collapse_plateaus`.
+"""Regression tests for `pydma.silicon.strict_sto`.
+
+The bulk of this file covers `_collapse_plateaus`; `_pav_isotonic` and the
+input contract of `pchip_resample_for_pybamm` are covered at the end.
 
 These pin the 1.1.2 plateau-collapse contract: the shift applied to a plateau's
 two surviving endpoints is bounded by a quarter of the distance to the
@@ -17,7 +20,8 @@ arithmetic bit-for-bit wherever the plateau levels are well separated.
 import numpy as np
 import pytest
 
-from pydma.silicon.strict_sto import _collapse_plateaus, pchip_resample_for_pybamm
+from pydma.silicon.generator import generate_si_curve
+from pydma.silicon.strict_sto import _collapse_plateaus, _pav_isotonic, pchip_resample_for_pybamm
 
 # ---------------------------------------------------------------------------
 # Frozen pre-1.1.2 reference implementation
@@ -134,7 +138,8 @@ def test_legacy_collapse_silently_loses_voltage_support():
         assert v_lost not in set(v_leg[order][keep].tolist())
 
     # And the silent part: the resample accepts the damaged curve without a word.
-    sto_grid, v_grid = pchip_resample_for_pybamm(v_leg, q_leg, n_points=11)
+    # These fixtures run V upward with sto, so the endpoint snap does not apply.
+    sto_grid, v_grid = pchip_resample_for_pybamm(v_leg, q_leg, n_points=11, snap_endpoint=False)
     assert sto_grid.size == 11
     assert np.all(np.isfinite(v_grid))
 
@@ -162,7 +167,7 @@ def test_fixed_collapse_is_clean_on_the_trigger_input():
 def test_collapsed_output_survives_pchip_resample_without_dedup():
     """The collapsed curve is a valid PCHIP abscissa as-is."""
     v_out, q_out = _collapse_plateaus(TRIGGER_V, TRIGGER_Q)
-    sto_grid, v_grid = pchip_resample_for_pybamm(v_out, q_out, n_points=101)
+    sto_grid, v_grid = pchip_resample_for_pybamm(v_out, q_out, n_points=101, snap_endpoint=False)
 
     assert sto_grid.size == 101
     assert np.all(np.diff(sto_grid) > 0.0)
@@ -443,3 +448,212 @@ def test_explicit_eps_is_still_bounded_by_the_quarter_gap():
     np.testing.assert_allclose(float(q_out[3] - q_out[2]), 0.5 * 4e-6, rtol=1e-9)
     # The two shifted plateaus still cannot meet.
     assert float(q_out[3]) < float(q_out[4])
+
+
+# ---------------------------------------------------------------------------
+# _pav_isotonic: pooled means worked out by hand
+# ---------------------------------------------------------------------------
+#
+# PAV walks left to right and pools a block with its predecessor whenever the
+# block mean would violate the requested direction. The three cases below were
+# traced by hand; the pooled values are written out as constants so nothing on
+# the expected side comes from the function under test.
+
+
+def test_pav_pools_a_single_violating_pair_to_their_mean():
+    """[1, 3, 2, 4] non-decreasing.
+
+    3 and 2 violate, so they pool to (3 + 2) / 2 = 2.5; 1 is already below
+    that and 4 above it, so both stay. A sign error in the direction handling
+    would return the input unchanged or pool the wrong pair.
+    """
+    result = _pav_isotonic(np.array([1.0, 3.0, 2.0, 4.0]), "nondecreasing")
+
+    np.testing.assert_allclose(result, np.array([1.0, 2.5, 2.5, 4.0]), rtol=0.0, atol=0.0)
+    assert np.all(np.diff(result) >= 0.0)
+    # Isotonic regression preserves the sum: the pooling only redistributes.
+    assert float(result.sum()) == pytest.approx(1.0 + 3.0 + 2.0 + 4.0, rel=1e-12)
+
+
+def test_pav_mirrors_the_pooling_for_a_nonincreasing_direction():
+    """[4, 2, 3, 1] non-increasing.
+
+    The direction flag negates the input, so the violating pair is 2 and 3;
+    they pool to 2.5 and the sign flips back. Measuring the violation on the
+    raw values instead would leave the sequence untouched.
+    """
+    result = _pav_isotonic(np.array([4.0, 2.0, 3.0, 1.0]), "nonincreasing")
+
+    np.testing.assert_allclose(result, np.array([4.0, 2.5, 2.5, 1.0]), rtol=0.0, atol=0.0)
+    assert np.all(np.diff(result) <= 0.0)
+    assert float(result.sum()) == pytest.approx(4.0 + 2.0 + 3.0 + 1.0, rel=1e-12)
+
+
+def test_pav_grows_a_pool_to_three_members():
+    """[1, 5, 3, 2, 6] non-decreasing.
+
+    5 and 3 pool to 4 first. 2 then violates that block, so the block absorbs
+    it as a size-weighted mean, (4 * 2 + 2 * 1) / 3 = 10 / 3, and NOT as the
+    unweighted (4 + 2) / 2 = 3. This is the case an off-by-one in the block
+    sizes gets wrong.
+    """
+    pooled = 10.0 / 3.0
+    result = _pav_isotonic(np.array([1.0, 5.0, 3.0, 2.0, 6.0]), "nondecreasing")
+
+    np.testing.assert_allclose(result, np.array([1.0, pooled, pooled, pooled, 6.0]), rtol=1e-15)
+    assert np.all(np.diff(result) >= 0.0)
+    assert float(result.sum()) == pytest.approx(1.0 + 5.0 + 3.0 + 2.0 + 6.0, rel=1e-12)
+
+
+def test_pav_leaves_an_already_monotone_sequence_alone():
+    """Nothing violates, so nothing pools."""
+    values = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+
+    np.testing.assert_array_equal(_pav_isotonic(values, "nondecreasing"), values)
+
+
+# ---------------------------------------------------------------------------
+# generate_si_curve's monotone filter, end to end
+# ---------------------------------------------------------------------------
+
+# A graphite reference that rises linearly with voltage, and a blend built so
+# the extracted silicon curve carries three deliberate dips. With gamma = 0.5
+# the extraction Q_Si = (Q_blend - (1 - gamma) Q_Gr) / gamma inverts the
+# construction exactly, so Q_Si is the wobble below and its three descending
+# flanks are the non-monotone stretches the filter has to remove.
+_SI_V_LO, _SI_V_HI, _SI_N = 0.05, 0.50, 61
+_SI_GAMMA = 0.5
+_SI_V = np.linspace(_SI_V_LO, _SI_V_HI, _SI_N)
+_SI_T = (_SI_V - _SI_V_LO) / (_SI_V_HI - _SI_V_LO)
+# Amplitude 0.08 against a slope of 1 over t: d/dt = 1 + 0.48 pi cos(6 pi t)
+# reaches -0.5, so the wobble genuinely reverses rather than merely flattening.
+_SI_WOBBLE = _SI_T + 0.08 * np.sin(6.0 * np.pi * _SI_T)
+_SI_Q_GR_RISING = _SI_T
+_SI_Q_BLEND_RISING = _SI_GAMMA * _SI_WOBBLE + (1.0 - _SI_GAMMA) * _SI_T
+
+
+def _contiguous_runs(indices):
+    """Group a sorted index array into (first, last) contiguous runs."""
+    runs = []
+    for index in indices.tolist():
+        if runs and index == runs[-1][1] + 1:
+            runs[-1][1] = index
+        else:
+            runs.append([index, index])
+    return [(first, last) for first, last in runs]
+
+
+@pytest.mark.parametrize("rising", [True, False], ids=["rising", "falling"])
+def test_generate_si_curve_monotone_filter_only_touches_the_violations(rising):
+    """The default ``monotone_filter=True`` returns a monotone sto axis, and
+    it differs from the unfiltered curve exactly around the constructed dips.
+
+    Two things are pinned. The output really is monotone in the direction the
+    curve runs -- a PAV direction picked from the wrong end would leave the
+    dips in place. And every stretch where the two results differ contains an
+    actual violation of the unfiltered curve, so the filter is not reshaping
+    parts of the curve that were already fine.
+    """
+    q_gr = _SI_Q_GR_RISING if rising else 1.0 - _SI_Q_GR_RISING
+    q_blend = _SI_Q_BLEND_RISING if rising else 1.0 - _SI_Q_BLEND_RISING
+
+    filtered = generate_si_curve(
+        blend_data=(_SI_V, q_blend), graphite_data=(_SI_V, q_gr), gamma_si=_SI_GAMMA
+    ).normalized_capacity
+    unfiltered = generate_si_curve(
+        blend_data=(_SI_V, q_blend),
+        graphite_data=(_SI_V, q_gr),
+        gamma_si=_SI_GAMMA,
+        monotone_filter=False,
+    ).normalized_capacity
+
+    steps = np.diff(unfiltered)
+    violations = np.flatnonzero(steps < 0.0) if rising else np.flatnonzero(steps > 0.0)
+    assert violations.size >= 3, "the fixture must actually be non-monotone"
+
+    if rising:
+        assert np.all(np.diff(filtered) >= 0.0), "filtered curve must not fall"
+    else:
+        assert np.all(np.diff(filtered) <= 0.0), "filtered curve must not rise"
+
+    changed = np.flatnonzero(filtered != unfiltered)
+    assert changed.size > 0, "the filter has to change something on this input"
+
+    # A PAV pool is a contiguous block built around at least one violation, so
+    # no run of changed samples may sit in an already-monotone stretch.
+    violating_samples = set(violations.tolist()) | set((violations + 1).tolist())
+    for first, last in _contiguous_runs(changed):
+        assert violating_samples & set(
+            range(first, last + 1)
+        ), f"samples {first}..{last} changed although no violation touches them"
+
+    # Each violating pair really was pooled away.
+    for index in violations:
+        assert filtered[index] != unfiltered[index] or filtered[index + 1] != unfiltered[index + 1]
+
+
+# ---------------------------------------------------------------------------
+# pchip_resample_for_pybamm: input contracts as exceptions
+# ---------------------------------------------------------------------------
+
+# A short falling V(sto) curve: the direction snap_endpoint assumes.
+_RESAMPLE_V = np.array([0.30, 0.20, 0.10])
+_RESAMPLE_STO = np.array([0.0, 0.5, 1.0])
+
+
+def test_resample_shape_mismatch_raises_value_error():
+    with pytest.raises(ValueError, match="must have identical shape"):
+        pchip_resample_for_pybamm(np.array([0.30, 0.20, 0.10]), np.array([0.0, 1.0]))
+
+
+def test_resample_needs_at_least_two_samples():
+    with pytest.raises(ValueError, match="Need at least 2 samples"):
+        pchip_resample_for_pybamm(np.array([0.30]), np.array([0.5]))
+
+
+@pytest.mark.parametrize(
+    "n_points",
+    [1, 0, -5, 2.5, "11"],
+    ids=["one", "zero", "negative", "float", "string"],
+)
+def test_resample_rejects_a_grid_that_is_not_an_integer_of_at_least_two(n_points):
+    with pytest.raises(ValueError, match="n_points must be an integer >= 2"):
+        pchip_resample_for_pybamm(_RESAMPLE_V, _RESAMPLE_STO, n_points=n_points)
+
+
+def test_resample_rejects_a_curve_that_is_degenerate_after_dedup():
+    """Every sample shares one sto value, so the dedup leaves a single point
+    and there is no abscissa to interpolate along."""
+    with pytest.raises(ValueError, match="fewer than 2 unique sto values"):
+        pchip_resample_for_pybamm(_RESAMPLE_V, np.array([0.5, 0.5, 0.5]))
+
+
+def test_resample_refuses_to_snap_the_endpoint_of_a_rising_curve():
+    """``snap_endpoint`` writes min(voltage) into the LAST grid point, which is
+    the highest-voltage end of a rising V(sto). Snapping there would replace the
+    curve's maximum with its minimum, so the rising direction is rejected. The
+    same curve passes with ``snap_endpoint=False``.
+    """
+    rising_v = _RESAMPLE_V[::-1]
+
+    with pytest.raises(ValueError, match="rises instead"):
+        pchip_resample_for_pybamm(rising_v, _RESAMPLE_STO)
+
+    sto_grid, v_grid = pchip_resample_for_pybamm(rising_v, _RESAMPLE_STO, snap_endpoint=False)
+    assert float(v_grid[-1]) == pytest.approx(float(rising_v.max()))
+    assert sto_grid.size == v_grid.size
+
+
+def test_resample_accepts_a_numpy_integer_grid_size():
+    """A grid size computed with numpy arrives as np.int64, which is not an
+    ``int`` instance. The check is on ``numbers.Integral`` for exactly this.
+    """
+    sto_grid, v_grid = pchip_resample_for_pybamm(_RESAMPLE_V, _RESAMPLE_STO, n_points=np.int64(11))
+
+    assert sto_grid.size == 11
+    assert v_grid.size == 11
+    assert np.all(np.diff(sto_grid) > 0.0)
+    np.testing.assert_allclose(sto_grid[0], _RESAMPLE_STO.min(), atol=0.0, rtol=0.0)
+    np.testing.assert_allclose(sto_grid[-1], _RESAMPLE_STO.max(), atol=0.0, rtol=0.0)
+    # snap_endpoint defaults to True: the lowest raw voltage is written back.
+    assert float(v_grid[-1]) == float(_RESAMPLE_V.min())

@@ -57,6 +57,13 @@ section in [README.md](README.md), 3-5 bullets max. Lead with
 user-visible behavior changes; leave internal cleanup (mypy, typing,
 docs) for one short trailing bullet.
 
+A major release additionally leads the README with a
+`## Highlights of X.Y.Z` section, because the README is the PyPI project
+page and a breaking change belongs above the fold. In that case the
+Release Notes entry is a one-line pointer to it instead of a copy, and
+the next major cut replaces the top section rather than adding a second
+one.
+
 ## 5. Run all gates locally
 
 Every gate must pass before you push. If any fails, fix it on the
@@ -208,7 +215,38 @@ python -m venv /tmp/pydma-pypi-venv
 This is the run that actually exercises the lower-direct dependency
 floors against PyPI's resolver.
 
-## 11. Announce / close out
+## 11. Publish the public mirror and archive on Zenodo
+
+The Zenodo archive is minted from the GitHub mirror
+(`github.com/tum-ees/PyDMA`), not from this GitLab repository. Zenodo
+listens for a *published GitHub Release*; pushing the tag alone does not
+trigger an archive. The mirror also carries the URLs that PyPI shows on
+the project page (Homepage, Repository, Issues all point at GitHub), so
+a skipped mirror push leaves the published package pointing at a tree
+that lacks the release.
+
+A clone may have only the GitLab `origin`. Check first:
+
+```bash
+git remote -v
+git remote add mirror https://github.com/tum-ees/PyDMA.git   # if missing
+git push mirror main
+git push mirror vX.Y.Z
+```
+
+Then publish a GitHub Release for the tag, using the CHANGELOG entry as
+the body. Zenodo archives the tag within seconds of the release event.
+
+Verify the archive before closing out:
+
+- [ ] A new version record exists under the concept DOI
+      [10.5281/zenodo.21346639](https://doi.org/10.5281/zenodo.21346639),
+      and its version field reads `vX.Y.Z`.
+- [ ] `CITATION.cff` still carries the *concept* DOI, not the new
+      per-version DOI. The concept DOI always resolves to the newest
+      version, which is why it does not change from release to release.
+
+## 12. Announce / close out
 
 - [ ] Move any remaining release-branch-only commits back into the
       mainline narrative if needed.
@@ -231,3 +269,6 @@ floors against PyPI's resolver.
   the stated Python floor.
 - Committing notebook outputs that are pure stochastic-rerun noise
   with no real content change.
+- Uploading to PyPI and stopping there: without the mirror push and the
+  GitHub Release, the version has no Zenodo record, so the DOI in the
+  citation metadata keeps resolving to the previous release.

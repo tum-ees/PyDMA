@@ -25,12 +25,15 @@ tests-minimum:
     - python -m pytest --override-ini="addopts=" -q -m "not scientific"
     - python -m pytest --override-ini="addopts=" -q -m scientific
 
+# Runs the golden tests against whatever numpy/scipy resolve to today, on
+# purpose: this job is the canary for upstream drift in the numerics the
+# regression baselines were recorded with.
 tests-latest:
   stage: verify
   image: python:3.14
   script:
     - python -m pip install -e ".[dev]"
-    - python -m pytest --override-ini="addopts=" -q -m "not scientific"
+    - python -m pytest --override-ini="addopts=" -q
 
 package-build:
   stage: build
