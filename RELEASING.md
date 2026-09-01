@@ -69,6 +69,14 @@ one.
 Every gate must pass before you push. If any fails, fix it on the
 release branch.
 
+Local results depend on the versions installed in your environment,
+while the CI jobs resolve dependencies fresh on every run, so a gate can
+pass locally and fail in the pipeline on the same commit (the 2.0.0 cut
+hit this: matplotlib 3.11 narrowed the `rc_context` typing while the
+local environment still ran 3.10). The pipeline on the merge request is
+the authoritative check. To reproduce it locally, run the gates in a
+fresh venv installed with `pip install -e ".[dev]"`.
+
 ```bash
 # Fast unit suite
 python -m pytest --override-ini="addopts=" -q -m "not scientific"
@@ -134,17 +142,23 @@ These are the items review keeps catching. Verify explicitly:
 
 ## 7. Merge and tag
 
+`main` is a protected branch and only accepts merge requests, so merge
+through the GitLab UI, then tag the merge commit it created:
+
 ```bash
 git switch main
-git merge --no-ff release/vX.Y.Z       # or use the platform's merge UI
+git pull --ff-only
 git tag -a vX.Y.Z -m "Release X.Y.Z"
-git push origin main
 git push origin vX.Y.Z
 ```
 
 The tag goes on the *merge* commit, not on any commit on the release
 branch. PyPI does not require the tag, but it makes "what code is on
 PyPI version X.Y.Z" trivially answerable.
+
+Tag only after the pipeline on `main` is green. A tag is cheap to place
+and expensive to move once anything has consumed it, and the pipeline is
+the first consumer that notices a broken one.
 
 ## 8. Build artifacts from the tagged commit
 
