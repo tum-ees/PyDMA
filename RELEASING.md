@@ -95,21 +95,22 @@ python -m black --check src tests doc
 python -m isort --check-only src tests doc
 
 # Tutorial sanity-check (manual): run BOTH tutorial notebooks end-to-end on
-# the release branch. Treat the run as a gate, not as a source of commits.
-# The fits use differential evolution without a seed, so the numbers move
-# substantially between runs on identical code. Measured across two runs of
-# the same commit: joint-fit RMSE from 3.9 to 8.3 mV, blend gamma_Si from
-# 0.224 to 0.234. Afterwards revert the stochastic notebook outputs and
-# notebooks/dma_results_P45B_23.json, then commit only what you actually
-# meant to change, such as the version stamps and any deliberate source edits.
+# the release branch. The two notebooks behave differently here:
 #
 #   notebooks/getting_started.ipynb
-#     Confirm the joint fits still land in the single-digit mV band and that
+#     Runs seeded (random_seed=1234, medium preset), so its numbers are
+#     reproducible to the printed digit on identical code and versions —
+#     a rerun that lands elsewhere is a finding, not noise. Refreshing
+#     its outputs together with notebooks/dma_results_P45B_23.json is
+#     therefore meaningful; commit both from the same run or neither.
+#     Confirm the joint fits land in the single-digit mV band and that
 #     blend gamma_Si is still about 0.22.
 #
 #   notebooks/pybamm_integration.ipynb
-#     Confirm the printed PyDMA version stamp matches the release and that
-#     saved output does not contain an absolute workstation path. Also confirm
+#     Unseeded; its fit numbers move between runs on identical code, so
+#     refresh its outputs only for a real content change. Confirm the
+#     printed PyDMA version stamp matches the release and that saved
+#     output does not contain an absolute workstation path. Also confirm
 #     the PASS guard "DFN voltage RMSE within 30 mV tolerance" still
 #     holds at the end.
 ```
@@ -138,7 +139,7 @@ These are the items review keeps catching. Verify explicitly:
       either intentionally refreshed *or* reverted before the merge
       commit — do not ship stochastic-rerun noise as "the release."
 - [ ] Scientific test still skips cleanly from an unpacked sdist (see
-      §8 verification).
+      §9 verification).
 
 ## 7. Merge and tag
 
@@ -160,84 +161,15 @@ Tag only after the pipeline on `main` is green. A tag is cheap to place
 and expensive to move once anything has consumed it, and the pipeline is
 the first consumer that notices a broken one.
 
-## 8. Build artifacts from the tagged commit
+## 8. Push the public mirror
 
-Always build from a fresh clean checkout of the tag, not from the
-release branch with potential local untracked files.
-
-```bash
-git clone --depth 1 --branch vX.Y.Z <repo-url> /tmp/pydma-release
-cd /tmp/pydma-release
-python -m build                          # produces dist/pydma-X.Y.Z.tar.gz + .whl
-python -m twine check dist/*             # both must report PASSED
-```
-
-Smoke check the sdist-installed behavior:
-
-```bash
-python -m venv /tmp/pydma-sdist-venv
-/tmp/pydma-sdist-venv/bin/python -m pip install dist/pydma-X.Y.Z.tar.gz
-/tmp/pydma-sdist-venv/bin/python -c "import pydma; print(pydma.__version__)"
-# Expect: X.Y.Z
-```
-
-Verify the scientific test skips cleanly when the unpacked sdist
-lacks the data files (this is the contract the module-level
-`pytest.mark.skipif` in `tests/test_scientific_regressions.py`
-promises; if it breaks, that contract is broken):
-
-```bash
-tar -xzf dist/pydma-X.Y.Z.tar.gz -C /tmp
-python -m pytest /tmp/pydma-X.Y.Z/tests/test_scientific_regressions.py \
-    -m scientific -q -o addopts=""
-# Expect: 2 skipped
-```
-
-## 9. Upload to TestPyPI, smoke-install
-
-```bash
-python -m twine upload --repository testpypi dist/*
-```
-
-In a fresh venv, install from TestPyPI and import:
-
-```bash
-python -m venv /tmp/pydma-testpypi-venv
-/tmp/pydma-testpypi-venv/bin/python -m pip install \
-    -i https://test.pypi.org/simple/ \
-    --extra-index-url https://pypi.org/simple/ \
-    pydma==X.Y.Z
-/tmp/pydma-testpypi-venv/bin/python -c "from pydma import DMAAnalyzer; import pydma; print(pydma.__version__)"
-```
-
-## 10. Upload to real PyPI
-
-Only after the TestPyPI smoke test passes:
-
-```bash
-python -m twine upload dist/*
-```
-
-Confirm in a fresh venv:
-
-```bash
-python -m venv /tmp/pydma-pypi-venv
-/tmp/pydma-pypi-venv/bin/python -m pip install pydma==X.Y.Z
-/tmp/pydma-pypi-venv/bin/python -c "import pydma; print(pydma.__version__)"
-```
-
-This is the run that actually exercises the lower-direct dependency
-floors against PyPI's resolver.
-
-## 11. Publish the public mirror and archive on Zenodo
-
-The Zenodo archive is minted from the GitHub mirror
-(`github.com/tum-ees/PyDMA`), not from this GitLab repository. Zenodo
-listens for a *published GitHub Release*; pushing the tag alone does not
-trigger an archive. The mirror also carries the URLs that PyPI shows on
-the project page (Homepage, Repository, Issues all point at GitHub), so
-a skipped mirror push leaves the published package pointing at a tree
-that lacks the release.
+Everything from here on runs on the GitHub mirror
+(`github.com/tum-ees/PyDMA`): the publish workflow uploads to PyPI from
+there, and Zenodo mints the DOI from a Release published there. The
+mirror also carries the URLs that PyPI shows on the project page
+(Homepage, Repository, Issues all point at GitHub), so a skipped mirror
+push leaves the published package pointing at a tree that lacks the
+release.
 
 A clone may have only the GitLab `origin`. Check first:
 
@@ -248,11 +180,67 @@ git push mirror main
 git push mirror vX.Y.Z
 ```
 
-Then publish a GitHub Release for the tag, using the CHANGELOG entry as
-the body. Zenodo archives the tag within seconds of the release event.
+The tag must contain `.github/workflows/publish.yml`: a workflow
+triggered by a release runs the file as it exists in the tagged commit,
+not the one on the default branch, so a tag without it uploads nothing,
+silently.
 
-Verify the archive before closing out:
+## 9. Dry run against TestPyPI
 
+Trusted publishing is registered on PyPI and on TestPyPI for this
+repository and workflow (`publish.yml`, environments `pypi` and
+`testpypi`); no token is involved. On the mirror, run *Actions → publish
+→ Run workflow* with target `testpypi`. The workflow builds from `main`,
+checks the artifacts with twine, and uploads to TestPyPI. An
+`invalid-publisher` error means one of owner, repository, workflow
+filename, or environment name differs between the workflow and the
+publisher registered on the index.
+
+In a fresh venv, install from TestPyPI and import (on Windows the venv
+binaries live under `Scripts\` instead of `bin/`):
+
+```bash
+python -m venv /tmp/pydma-testpypi-venv
+/tmp/pydma-testpypi-venv/bin/python -m pip install \
+    -i https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ \
+    pydma==X.Y.Z
+/tmp/pydma-testpypi-venv/bin/python -c "from pydma import DMAAnalyzer; import pydma; print(pydma.__version__)"
+```
+
+Verify the scientific test skips cleanly from the sdist that was
+actually uploaded (this is the contract the module-level
+`pytest.mark.skipif` in `tests/test_scientific_regressions.py`
+promises; if it breaks, that contract is broken):
+
+```bash
+python -m pip download --no-deps --no-binary :all: \
+    -i https://test.pypi.org/simple/ pydma==X.Y.Z -d /tmp/pydma-sdist
+tar -xzf /tmp/pydma-sdist/pydma-X.Y.Z.tar.gz -C /tmp/pydma-sdist
+python -m pytest /tmp/pydma-sdist/pydma-X.Y.Z/tests/test_scientific_regressions.py \
+    -m scientific -q -o addopts=""
+# Expect: 2 skipped
+```
+
+## 10. Publish the Release: PyPI and Zenodo in one step
+
+Only after the TestPyPI dry run passes. On the mirror: *Releases → Draft
+a new release*, pick tag `vX.Y.Z`, title `vX.Y.Z`, body = the CHANGELOG
+entry. Publishing triggers both consumers of the release event at once:
+
+- the publish workflow uploads to PyPI with PEP 740 attestations,
+  refusing first if the tag disagrees with `_version.py`;
+- Zenodo archives the tag within seconds.
+
+Verify all of it:
+
+- [ ] The `publish` run in the Actions tab is green.
+- [ ] `pip install pydma==X.Y.Z` works in a fresh venv and the import
+      prints the right version. The simple index that pip reads lags the
+      JSON API by a few minutes, so a "no matching distribution" right
+      after the upload is propagation, not failure. This install is also
+      the run that exercises the lower-direct dependency floors against
+      PyPI's resolver.
 - [ ] A new version record exists under the concept DOI
       [10.5281/zenodo.21346639](https://doi.org/10.5281/zenodo.21346639),
       and its version field reads `vX.Y.Z`.
@@ -260,12 +248,35 @@ Verify the archive before closing out:
       per-version DOI. The concept DOI always resolves to the newest
       version, which is why it does not change from release to release.
 
+New files can be added to a PyPI release for 14 days after publication;
+after that PyPI rejects them and the only correction left is yanking.
+
+## 11. Fallback: manual upload with twine
+
+The API token stays valid alongside trusted publishing. If the workflow
+path is unavailable, build from a fresh clean checkout of the tag, not
+from the release branch with potential local untracked files:
+
+```bash
+git clone --depth 1 --branch vX.Y.Z <repo-url> /tmp/pydma-release
+cd /tmp/pydma-release
+python -m build                          # produces dist/pydma-X.Y.Z.tar.gz + .whl
+python -m twine check dist/*             # both must report PASSED
+python -m twine upload --repository testpypi dist/*
+python -m twine upload dist/*            # only after the TestPyPI smoke test
+```
+
+The verifications from §9 and §10 apply unchanged. A manual upload
+cannot carry attestations; PyPI accepts those only from a
+trusted-publisher identity.
+
 ## 12. Announce / close out
 
 - [ ] Move any remaining release-branch-only commits back into the
       mainline narrative if needed.
-- [ ] Delete the release branch (`git branch -d release/vX.Y.Z` and
-      `git push origin --delete release/vX.Y.Z`).
+- [ ] GitLab deletes the source branch when the merge request merges;
+      delete the local one (`git branch -d release/vX.Y.Z`) and prune
+      the stale remote-tracking refs (`git fetch --prune`).
 
 ---
 
@@ -277,6 +288,9 @@ Verify the archive before closing out:
   dynamically — there is no second place to update.
 - Building artifacts from the development checkout (picks up untracked
   files, stale `dist/`, or build/ directories).
+- Tagging a commit that predates `publish.yml`: the release event runs
+  the workflow file from the tagged commit, so nothing uploads and
+  nothing errors.
 - Skipping `twine check` and finding out PyPI rejects the README at
   upload time.
 - Shipping `from __future__ import annotations` shims that contradict
