@@ -161,20 +161,27 @@ Tag only after the pipeline on `main` is green. A tag is cheap to place
 and expensive to move once anything has consumed it, and the pipeline is
 the first consumer that notices a broken one.
 
-## 8. Push the public mirror
+## 8. Verify the public mirror
 
-Everything from here on runs on the GitHub mirror
-(`github.com/tum-ees/PyDMA`): the publish workflow uploads to PyPI from
-there, and Zenodo mints the DOI from a Release published there. The
-mirror also carries the URLs that PyPI shows on the project page
-(Homepage, Repository, Issues all point at GitHub), so a skipped mirror
-push leaves the published package pointing at a tree that lacks the
-release.
+GitLab mirrors this repository to the GitHub mirror
+(`github.com/tum-ees/PyDMA`) automatically shortly after each push,
+branches and tags included (Settings → Repository → Mirroring).
+Everything from here on runs on that mirror: the publish workflow
+uploads to PyPI from there, and Zenodo mints the DOI from a Release
+published there. The mirror also carries the URLs that PyPI shows on
+the project page (Homepage, Repository, Issues all point at GitHub).
 
-A clone may have only the GitLab `origin`. Check first:
+Confirm the sync arrived before continuing — `main` and the tag must
+resolve to the same commits on both sides:
 
 ```bash
-git remote -v
+git ls-remote https://github.com/tum-ees/PyDMA.git refs/heads/main "refs/tags/vX.Y.Z*"
+git rev-parse main "vX.Y.Z^{commit}"
+```
+
+Only if the mirror lags or the sync is broken, push by hand:
+
+```bash
 git remote add mirror https://github.com/tum-ees/PyDMA.git   # if missing
 git push mirror main
 git push mirror vX.Y.Z
