@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+* Type checking passes across matplotlib releases. matplotlib 3.11 types the
+  `rc_context` mapping by the literal set of rcParams names it ships with, which
+  a plain string-keyed dict does not satisfy, so the plotting module applies its
+  style through a single wrapper. Plot output is unchanged.
+
 * `voltage_anchored_windows` inverts only the strictly monotonic part of the
   reconstruction, keeping interpolation fill artefacts out of the anchored
   windows.

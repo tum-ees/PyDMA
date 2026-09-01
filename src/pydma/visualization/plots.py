@@ -18,8 +18,8 @@ Conventions used in this module:
 
 import contextlib
 import warnings
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Iterator, Sequence
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -51,7 +51,7 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> dict[str, 
     """Build the rcParams overrides used for DMA plots.
 
     Returns the style dict rather than mutating ``plt.rcParams`` directly;
-    callers apply it with ``plt.rc_context(style)`` around figure creation
+    callers apply it with ``_rc_context(style)`` around figure creation
     and drawing so the global rcParams state is unchanged once the call
     returns.
 
@@ -67,7 +67,7 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> dict[str, 
     Returns
     -------
     dict
-        rcParams overrides for use as a ``plt.rc_context`` argument.
+        rcParams overrides for use as a ``_rc_context`` argument.
     """
     style: dict[str, Any] = {
         "font.size": 10,
@@ -98,6 +98,20 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> dict[str, 
         )
     style["text.usetex"] = bool(use_tex)
     return style
+
+
+@contextlib.contextmanager
+def _rc_context(style: dict[str, Any]) -> Iterator[None]:
+    """Apply ``style`` as rcParams overrides for the duration of the block.
+
+    matplotlib types the ``rc_context`` mapping by the literal set of
+    rcParams names of the release it ships with, and that set grows from
+    release to release. A ``dict[str, Any]`` therefore satisfies the type
+    checker on some supported versions and not on others, even though the
+    call is valid on all of them. The keys come from :func:`_setup_style`.
+    """
+    with plt.rc_context(cast(Any, style)):
+        yield
 
 
 def _first_nonempty_array(
@@ -451,7 +465,7 @@ def plot_ocv_model_param_show(
 
     fig_w_cm, fig_h_cm = figsize_cm
     compact_height = fig_h_cm <= 12.0
-    with plt.rc_context(style):
+    with _rc_context(style):
         fig = plt.figure(
             figsize=(fig_w_cm / 2.54, fig_h_cm / 2.54),
             facecolor="white",
@@ -722,7 +736,7 @@ def plot_ocv_comparison(
     """
     style = _setup_style()
 
-    with plt.rc_context(style):
+    with _rc_context(style):
         if ax is None:
             _, ax = plt.subplots(figsize=(8, 5))
 
@@ -836,7 +850,7 @@ def plot_dva_comparison(
     """
     style = _setup_style()
 
-    with plt.rc_context(style):
+    with _rc_context(style):
         if ax is None:
             _, ax = plt.subplots(figsize=(8, 5))
 
@@ -956,7 +970,7 @@ def plot_ica_comparison(
     """
     style = _setup_style()
 
-    with plt.rc_context(style):
+    with _rc_context(style):
         if ax is None:
             _, ax = plt.subplots(figsize=(8, 5))
 
@@ -1029,7 +1043,7 @@ def plot_degradation_modes(
     """
     style = _setup_style()
 
-    with plt.rc_context(style):
+    with _rc_context(style):
         if ax is None:
             # Wider figure if showing blend components
             n_extra = (2 if show_anode_blend else 0) + (2 if show_cathode_blend else 0)
@@ -1152,7 +1166,7 @@ def plot_dma_result(
     """
     style = _setup_style()
 
-    with plt.rc_context(style):
+    with _rc_context(style):
         fig, axes = plt.subplots(2, 2, figsize=figsize)
         fig.suptitle("Degradation Mode Analysis Results", fontsize=14, fontweight="bold")
 
@@ -1387,7 +1401,7 @@ def plot_aging_study(
     else:
         y_min_padded, y_max_padded = 0, 1
 
-    with plt.rc_context(style):
+    with _rc_context(style):
         # Create figure with custom spacing:
         # - tighter spacing between DM panels
         # - larger gap before RMSE panel
