@@ -6,13 +6,17 @@ parameters for the degradation mode analysis.
 """
 
 from dataclasses import dataclass
+from difflib import get_close_matches
 from typing import Any
 
 import numpy as np
 
-from pydma.utils.roi import ROISpec, get_roi_outer_bounds
+from pydma.utils.roi import ROISpec
 
 SUPPORTED_ALGORITHMS = {"differential_evolution"}
+
+# Methods implemented by preprocessing.smoother.apply_filter.
+SUPPORTED_FILTER_TYPES = {"sgolay", "savgol", "lowess", "movmean", "movmedian", "gaussian"}
 
 
 @dataclass
@@ -31,6 +35,10 @@ class DMAConfig:
         Number of points to resample data to. Default: 1000.
     smoothing_points : int
         Window size for LOWESS smoothing of input curves. Default: 30.
+    filter_type : str
+        Smoothing method applied to the raw full-cell OCV before resampling.
+        One of 'lowess', 'sgolay', 'savgol', 'movmean', 'movmedian',
+        'gaussian'. Default: 'lowess'.
 
     weight_ocv : float
         Weight for OCV fitting term in cost function. Default: 100.
@@ -54,10 +62,11 @@ class DMAConfig:
 
     lower_bounds : tuple
         Lower bounds for [alpha_an, beta_an, alpha_ca, beta_ca].
-        Default: (0.8, -1.0, 0.8, -1.0).
+        Default: (1.0, -1.0, 1.0, -1.0).
     upper_bounds : tuple
         Upper bounds for [alpha_an, beta_an, alpha_ca, beta_ca].
-        Default: (2.0, 0.2, 2.0, 0.2).
+        Default: (2.0, 0.0, 2.1, 0.0). Capping both beta at 0 encodes the
+        assumption that each electrode starts at sto >= 0 for SOC = 0.
 
     use_anode_blend : bool
         Enable anode blend electrode model. Default: False.
@@ -89,6 +98,29 @@ class DMAConfig:
     inhom_cathode_offset : float
         Fraction of maximum cathode inhomogeneity already present at SOC = 0.
         Default: 0.0.
+
+    allow_resistance_offset : bool
+        Fit a series resistance that lifts the reconstructed full-cell OCV by
+        ``sign(direction) * R * |pocv_current_a|``. Default: False, which pins
+        parameter slot 9 to zero. Enabling it requires ``pocv_current_a``.
+        Every assignment re-validates the whole configuration, so on an existing
+        instance set ``pocv_current_a`` first and ``allow_resistance_offset``
+        second; the other order validates an intermediate state that has the
+        flag on without a current and raises.
+    pocv_current_a : float
+        Magnitude of the current the pOCV was measured at, in A. Only its
+        absolute value enters the model; the sign comes from ``direction``.
+        Default: 0.0.
+    resistance_offset_limit_ohm_ah : float
+        Capacity-normalized ceiling for the fitted resistance, in Ohm*Ah. The
+        bound is ``limit / capa_actual``, so at a common C-rate every cell of a
+        study gets the same voltage headroom regardless of its capacity.
+        Default: 0.25.
+    allow_negative_resistance_offset : bool
+        Open the resistance bounds symmetrically to ``[-r_max, r_max]``. A
+        negative resistance is unphysical, so this is a diagnostic setting for
+        checking whether the offset absorbs a level error of the other sign.
+        Default: False.
 
     max_anode_gain : float
         Maximum allowed anode capacity gain per CU. Default: 0.01.
@@ -149,6 +181,9 @@ class DMAConfig:
     direction: str = "charge"  # 'charge' or 'discharge'
     data_length: int = 1000
     smoothing_points: int = 30
+    # MATLAB calculate_full_cell_data.m smooths the raw pOCV with
+    # smooth(fcU_raw, smoothingPoints, 'lowess') before resampling.
+    filter_type: str = "lowess"
 
     # Cost function weights
     # LFP? -> we recommend weight_ocv / weight_dva = 10 / 3
@@ -208,6 +243,16 @@ class DMAConfig:
     inhom_anode_offset: float = 0.0
     inhom_cathode_offset: float = 0.0
 
+    # Series-resistance correction of the reconstructed full-cell OCV.
+    # Off by default; parameter slot 9 is pinned to zero while it is off.
+    # Set pocv_current_a together with the flag: enabling the flag without a
+    # current is rejected, because R and the current only ever appear as their
+    # product.
+    allow_resistance_offset: bool = False
+    pocv_current_a: float = 0.0
+    resistance_offset_limit_ohm_ah: float = 0.25
+    allow_negative_resistance_offset: bool = False
+
     # Constraint settings (max gain/loss per CU)
     max_anode_gain: float = 0.01
     max_cathode_gain: float = 0.01
@@ -246,6 +291,45 @@ class DMAConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate()
+        object.__setattr__(self, "_revalidate_on_assignment", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Assign a declared field and re-validate the whole configuration.
+
+        Names that are not declared fields are rejected so that a misspelled
+        setting (``config.direciton = 'discharge'``) fails loudly instead of
+        being silently ignored by the rest of the code.
+
+        A value the re-validation rejects is rolled back before the exception
+        leaves this method, so a caught exception leaves the configuration on
+        the value it had. The rollback covers every exception type, not just
+        ``ValueError``: ``config.algorithm = None`` fails inside ``.lower()``
+        with an ``AttributeError``, and leaving that assignment standing would
+        hand back a configuration nothing can read.
+        """
+        if not name.startswith("_") and name not in self.__dataclass_fields__:
+            close = get_close_matches(name, self.__dataclass_fields__, n=3)
+            hint = f" Did you mean {', '.join(close)}?" if close else ""
+            raise AttributeError(f"DMAConfig has no field {name!r}.{hint}")
+
+        # The flag is unset until __post_init__ ran, so field assignments made
+        # by the generated __init__ are not validated one at a time. Clearing
+        # it around _validate also covers the field assignments _validate
+        # itself makes.
+        if name.startswith("_") or not getattr(self, "_revalidate_on_assignment", False):
+            object.__setattr__(self, name, value)
+            return
+
+        previous = getattr(self, name)
+        object.__setattr__(self, name, value)
+        object.__setattr__(self, "_revalidate_on_assignment", False)
+        try:
+            self._validate()
+        except Exception:
+            object.__setattr__(self, name, previous)
+            raise
+        finally:
+            object.__setattr__(self, "_revalidate_on_assignment", True)
 
     def _validate(self):
         """Validate configuration values."""
@@ -270,6 +354,14 @@ class DMAConfig:
         if self.smoothing_points < 1:
             raise ValueError(f"smoothing_points must be >= 1, got {self.smoothing_points}")
 
+        if not isinstance(self.filter_type, str) or (
+            self.filter_type.lower() not in SUPPORTED_FILTER_TYPES
+        ):
+            raise ValueError(
+                f"filter_type must be one of {sorted(SUPPORTED_FILTER_TYPES)}, "
+                f"got {self.filter_type!r}"
+            )
+
         if self.weight_ocv < 0 or self.weight_dva < 0 or self.weight_ica < 0:
             raise ValueError("Cost function weights must be non-negative")
 
@@ -287,6 +379,38 @@ class DMAConfig:
                 f"speed_preset must be 'fast', 'medium', or 'thorough', got {self.speed_preset}"
             )
 
+        lower = np.asarray(self.lower_bounds, dtype=float).flatten()
+        upper = np.asarray(self.upper_bounds, dtype=float).flatten()
+        if lower.size != 4 or upper.size != 4:
+            raise ValueError(
+                "lower_bounds and upper_bounds must each hold 4 values "
+                "[alpha_an, beta_an, alpha_ca, beta_ca], got "
+                f"{lower.size} and {upper.size}"
+            )
+        if not np.all(np.isfinite(lower)) or not np.all(np.isfinite(upper)):
+            raise ValueError(
+                f"lower_bounds and upper_bounds must be finite, got {self.lower_bounds} "
+                f"and {self.upper_bounds}"
+            )
+        if np.any(lower >= upper):
+            idx = int(np.argmax(lower >= upper))
+            raise ValueError(
+                f"lower_bounds[{idx}] must be below upper_bounds[{idx}], "
+                f"got {lower[idx]} and {upper[idx]}"
+            )
+
+        if not 0.0 < self.gamma_anode_blend2_upper <= 1.0:
+            raise ValueError(
+                "gamma_anode_blend2_upper must be within (0, 1], got "
+                f"{self.gamma_anode_blend2_upper}"
+            )
+
+        if not 0.0 < self.gamma_cathode_blend2_upper <= 1.0:
+            raise ValueError(
+                "gamma_cathode_blend2_upper must be within (0, 1], got "
+                f"{self.gamma_cathode_blend2_upper}"
+            )
+
         if not 0.0 <= self.gamma_anode_blend2_init <= self.gamma_anode_blend2_upper:
             raise ValueError("gamma_anode_blend2_init must be within [0, gamma_anode_blend2_upper]")
 
@@ -295,11 +419,51 @@ class DMAConfig:
                 "gamma_cathode_blend2_init must be within [0, gamma_cathode_blend2_upper]"
             )
 
+        for limit_name in (
+            "max_anode_gain",
+            "max_cathode_gain",
+            "max_anode_blend1_gain",
+            "max_anode_blend2_gain",
+            "max_anode_loss",
+            "max_cathode_loss",
+            "max_anode_blend1_loss",
+            "max_anode_blend2_loss",
+        ):
+            limit_value = getattr(self, limit_name)
+            if limit_value < 0:
+                raise ValueError(f"{limit_name} must be >= 0, got {limit_value}")
+
+        (max_inhom_an, _), (max_inhom_ca, _) = self.get_inhomogeneity_bounds()
+        if not 0.0 <= max_inhom_an <= 1.0 or not 0.0 <= max_inhom_ca <= 1.0:
+            raise ValueError(
+                f"max_inhomogeneity must be within [0, 1], got {self.max_inhomogeneity}"
+            )
+
         if not 0.0 <= self.inhom_anode_offset <= 1.0:
             raise ValueError("inhom_anode_offset must be within [0, 1]")
 
         if not 0.0 <= self.inhom_cathode_offset <= 1.0:
             raise ValueError("inhom_cathode_offset must be within [0, 1]")
+
+        limit = float(self.resistance_offset_limit_ohm_ah)
+        if not np.isfinite(limit) or limit <= 0:
+            raise ValueError(
+                "resistance_offset_limit_ohm_ah must be finite and positive, got "
+                f"{self.resistance_offset_limit_ohm_ah}"
+            )
+
+        current = float(self.pocv_current_a)
+        if not np.isfinite(current) or current < 0:
+            raise ValueError(
+                f"pocv_current_a is a magnitude in A: finite and >= 0, got {self.pocv_current_a}"
+            )
+
+        if self.allow_resistance_offset and current <= 0:
+            raise ValueError(
+                "allow_resistance_offset needs pocv_current_a > 0: without a current "
+                "the resistance is not identifiable, because the model only ever sees "
+                "the product R * I."
+            )
 
     def get_solver_options(self) -> dict:
         """
@@ -349,7 +513,11 @@ class DMAConfig:
                 "polish": True,
             },
         }
-        opts = preset_options[self.speed_preset]
+        opts = preset_options.get(self.speed_preset)
+        if opts is None:
+            raise ValueError(
+                f"speed_preset must be one of {sorted(preset_options)}, got {self.speed_preset}"
+            )
         # Use instance workers setting (allows parallelization when workers > 1)
         opts["workers"] = self.workers
         return opts
@@ -377,18 +545,18 @@ class DMAConfig:
 
     def get_active_param_mask(self) -> list[bool]:
         """
-        Get mask indicating which of the 8 parameters are active.
+        Get mask indicating which of the 9 parameters are active.
 
         Returns
         -------
         list
-            8-element boolean list where True means parameter is active.
+            9-element boolean list where True means parameter is active.
 
         Notes
         -----
         Parameters are in order:
         [alpha_an, beta_an, alpha_ca, beta_ca, gamma_blend2_an,
-         gamma_blend2_ca, inhom_an, inhom_ca]
+         gamma_blend2_ca, inhom_an, inhom_ca, r_offset]
         """
         return [
             True,  # alpha_an - always active
@@ -399,13 +567,40 @@ class DMAConfig:
             self.use_cathode_blend,  # gamma_blend2_ca
             self.allow_anode_inhomogeneity,  # inhom_an
             self.allow_cathode_inhomogeneity,  # inhom_ca
+            self.allow_resistance_offset,  # r_offset
         ]
 
+    def _resistance_offset_bounds(self, capa_actual: float | None) -> tuple[float, float]:
+        """Bounds for the resistance slot, in Ohm.
+
+        The configured limit is capacity-normalized (Ohm*Ah), so the ceiling is
+        ``limit / capa_actual``. At a fixed C-rate the current scales with the
+        capacity, which makes ``r_max * I`` the same voltage headroom for every
+        cell of a study.
+        """
+        if not self.allow_resistance_offset:
+            return 0.0, 0.0
+
+        if capa_actual is None:
+            raise ValueError(
+                "allow_resistance_offset is set, so capa_actual is required to turn "
+                "resistance_offset_limit_ohm_ah into a resistance bound."
+            )
+        capa = float(capa_actual)
+        if not np.isfinite(capa) or capa <= 0:
+            raise ValueError(f"capa_actual must be finite and positive, got {capa_actual}")
+
+        r_max = float(self.resistance_offset_limit_ohm_ah) / capa
+        return (-r_max if self.allow_negative_resistance_offset else 0.0), r_max
+
     def get_full_bounds(
-        self, inhom_an_prev: float | None = None, inhom_ca_prev: float | None = None
+        self,
+        inhom_an_prev: float | None = None,
+        inhom_ca_prev: float | None = None,
+        capa_actual: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Get full 8-element lower and upper bounds arrays.
+        Get full 9-element lower and upper bounds arrays.
 
         Parameters
         ----------
@@ -413,14 +608,24 @@ class DMAConfig:
             Previous anode inhomogeneity value for constraining bounds.
         inhom_ca_prev : float, optional
             Previous cathode inhomogeneity value for constraining bounds.
+        capa_actual : float, optional
+            Cell capacity of this check-up in Ah. Required when
+            ``allow_resistance_offset`` is set, because the resistance bound is
+            derived from the capacity-normalized limit.
 
         Returns
         -------
         tuple
-            (lower_bounds, upper_bounds) as numpy arrays of length 8.
+            (lower_bounds, upper_bounds) as numpy arrays of length 9.
+
+        Raises
+        ------
+        ValueError
+            If ``allow_resistance_offset`` is set and ``capa_actual`` is
+            missing or not a positive, finite capacity.
         """
-        lb = np.zeros(8)
-        ub = np.zeros(8)
+        lb = np.zeros(9)
+        ub = np.zeros(9)
 
         # Base 4 parameters
         lb[0:4] = self.lower_bounds
@@ -465,18 +670,26 @@ class DMAConfig:
             lb[7] = 0.0
             ub[7] = 0.0
 
+        # Series resistance
+        lb[8], ub[8] = self._resistance_offset_bounds(capa_actual)
+
         return lb, ub
 
     def get_initial_guess(
         self,
         inhom_an_prev: float | None = None,
         inhom_ca_prev: float | None = None,
+        capa_actual: float | None = None,
     ) -> np.ndarray:
-        """Get a MATLAB-style initial guess vector clipped to active bounds."""
+        """Get a MATLAB-style initial guess vector clipped to active bounds.
+
+        ``capa_actual`` is required when ``allow_resistance_offset`` is set; the
+        resistance slot then starts at the midpoint of its bounds.
+        """
         if self.use_anode_blend:
-            init = np.array([1.05, -0.005, 1.1, -0.01, 0.0, 0.0, 0.03, 0.03], dtype=float)
+            init = np.array([1.05, -0.005, 1.1, -0.01, 0.0, 0.0, 0.03, 0.03, 0.0], dtype=float)
         else:
-            init = np.array([1.2, 0.0, 1.1, -0.1, 0.0, 0.0, 0.03, 0.03], dtype=float)
+            init = np.array([1.2, 0.0, 1.1, -0.1, 0.0, 0.0, 0.03, 0.03, 0.0], dtype=float)
 
         if self.use_anode_blend:
             init[4] = self.gamma_anode_blend2_init
@@ -487,73 +700,18 @@ class DMAConfig:
         if not self.allow_cathode_inhomogeneity:
             init[7] = 0.0
 
-        lb, ub = self.get_full_bounds(inhom_an_prev=inhom_an_prev, inhom_ca_prev=inhom_ca_prev)
+        lb, ub = self.get_full_bounds(
+            inhom_an_prev=inhom_an_prev,
+            inhom_ca_prev=inhom_ca_prev,
+            capa_actual=capa_actual,
+        )
+        init[8] = 0.5 * (lb[8] + ub[8])
         return np.asarray(np.clip(init, lb, ub))
-
-    def calculate_roi_bounds(self) -> tuple[float, float]:
-        """
-        Calculate the overall ROI bounds considering all active fitting methods.
-
-        Returns
-        -------
-        tuple
-            (lowest_roi, highest_roi) bounds.
-        """
-        roi_mins = []
-        roi_maxs = []
-
-        # Shared ROI parser/validator also handles split interval inputs.
-        if self.weight_ocv > 0:
-            roi_lo, roi_hi = get_roi_outer_bounds(
-                self.roi_ocv_min,
-                self.roi_ocv_max,
-                min_name="roi_ocv_min",
-                max_name="roi_ocv_max",
-            )
-            roi_mins.append(roi_lo)
-            roi_maxs.append(roi_hi)
-
-        if self.weight_dva > 0:
-            roi_lo, roi_hi = get_roi_outer_bounds(
-                self.roi_dva_min,
-                self.roi_dva_max,
-                min_name="roi_dva_min",
-                max_name="roi_dva_max",
-            )
-            roi_mins.append(roi_lo)
-            roi_maxs.append(roi_hi)
-
-        if self.weight_ica > 0:
-            roi_lo, roi_hi = get_roi_outer_bounds(
-                self.roi_ica_min,
-                self.roi_ica_max,
-                min_name="roi_ica_min",
-                max_name="roi_ica_max",
-            )
-            roi_mins.append(roi_lo)
-            roi_maxs.append(roi_hi)
-
-        if not roi_mins:
-            return (0.0, 1.0)
-
-        return (min(roi_mins), max(roi_maxs))
 
     @property
     def enable_inhomogeneity(self) -> bool:
         """Whether inhomogeneity is enabled for either electrode."""
         return self.allow_anode_inhomogeneity or self.allow_cathode_inhomogeneity
-
-    @property
-    def filter_type(self) -> str | None:
-        """Filter type for pre-smoothing raw OCV data.
-
-        MATLAB-compatible: Uses LOWESS filter with smoothing_points window
-        (default 30) applied to raw OCV before resampling and DVA computation.
-
-        This matches MATLAB's calculate_full_cell_data.m:
-            fcU_smooth = smooth(fcU_raw, smoothingPoints, 'lowess');
-        """
-        return "lowess"  # MATLAB-compatible default
 
     @property
     def filter_kwargs(self) -> dict:
@@ -563,11 +721,6 @@ class DMAConfig:
         - window: smoothing_points (default 30)
         """
         return {"window": self.smoothing_points}
-
-    def get_bounds(self) -> list[tuple[float, float]]:
-        """Get parameter bounds as list of (min, max) tuples for the optimizer."""
-        lb, ub = self.get_full_bounds()
-        return list(zip(lb, ub))
 
     @classmethod
     def lfp_preset(cls, **kwargs) -> "DMAConfig":
@@ -606,9 +759,10 @@ class DMAConfig:
             # Weight ratio 10:3 instead of default 100:1
             weight_ocv=10.0,
             weight_dva=3.0,
-            # Split ROI for OCV: 0-15% and 85-100% SOC (avoid flat middle)
-            roi_ocv_min=(0.0, 0.85),
-            roi_ocv_max=(0.15, 1.0),
+            # Split ROI for OCV: roi_ocv_min holds the first interval (0-15% SOC),
+            # roi_ocv_max the second (85-100% SOC), avoiding the flat middle
+            roi_ocv_min=(0.0, 0.15),
+            roi_ocv_max=(0.85, 1.0),
             # Standard DVA ROI
             roi_dva_min=0.10,
             roi_dva_max=0.90,

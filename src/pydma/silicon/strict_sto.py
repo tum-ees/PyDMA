@@ -29,6 +29,8 @@ pchip_resample_for_pybamm
 ================ =================================================================
 """
 
+import numbers
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.interpolate import PchipInterpolator
@@ -207,7 +209,9 @@ def _collapse_plateaus(
         raise ValueError(f"eps must be finite; got {float(eps)!r}.")
     n = int(q_in.size)
     if n < 2:
-        return voltage, capacity
+        # The converted arrays, not the caller's: a float64 input would otherwise
+        # be handed straight back and the caller could mutate this result in place.
+        return v_in.copy(), q_in.copy()
 
     direction = 1 if q_in[-1] >= q_in[0] else -1
 
@@ -502,7 +506,11 @@ def pchip_resample_for_pybamm(
         mechanism, not the grid density).
     snap_endpoint : bool, keyword-only, default True
         If True, force ``v_grid[-1] = min(voltage)`` so the
-        silicon-saturation V is preserved as the table's last point.
+        silicon-saturation V is preserved as the table's last point. This
+        writes the lowest voltage at the sto maximum and therefore assumes a
+        falling V(sto). A curve that rises with sto raises ValueError instead
+        of having its highest-voltage endpoint overwritten with its lowest
+        voltage; pass ``snap_endpoint=False`` for such a curve.
 
     Returns
     -------
@@ -533,8 +541,11 @@ def pchip_resample_for_pybamm(
         )
     if voltage.size < 2:
         raise ValueError(f"Need at least 2 samples; got {voltage.size}.")
-    if not isinstance(n_points, int) or n_points < 2:
+    # numbers.Integral rather than int: a grid size computed with numpy arrives as
+    # np.int64, which is not an int instance.
+    if not isinstance(n_points, numbers.Integral) or n_points < 2:
         raise ValueError(f"n_points must be an integer >= 2; got {n_points!r}.")
+    n_points = int(n_points)
 
     raw_min_V = float(voltage.min())
 
@@ -549,6 +560,16 @@ def pchip_resample_for_pybamm(
     if sto_dedup.size < 2:
         raise ValueError(
             "After dedup, fewer than 2 unique sto values remain. " "Input is degenerate."
+        )
+
+    if snap_endpoint and float(v_dedup[-1]) > float(v_dedup[0]):
+        raise ValueError(
+            "snap_endpoint=True writes min(voltage) into the LAST grid point, which "
+            "assumes a falling V(sto) whose lowest voltage sits at the sto maximum. "
+            f"This curve rises instead: V = {float(v_dedup[0])!r} at "
+            f"sto = {float(sto_dedup[0])!r} and V = {float(v_dedup[-1])!r} at "
+            f"sto = {float(sto_dedup[-1])!r}. Pass snap_endpoint=False for a rising "
+            "curve."
         )
 
     pchip = PchipInterpolator(sto_dedup, v_dedup)

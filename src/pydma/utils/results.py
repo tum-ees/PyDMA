@@ -5,11 +5,30 @@ This module defines dataclasses for storing DMA analysis results,
 including single-CU results and multi-CU aging study results.
 """
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+def _longest_increasing_run(values: np.ndarray) -> tuple[int, int]:
+    """Half-open index range of the longest strictly increasing run in ``values``.
+
+    Ties break a run: two equal samples carry no direction, so a segment that
+    contains them cannot be inverted.
+    """
+    n = int(values.size)
+    if n < 2:
+        return 0, n
+
+    breaks = np.flatnonzero(~(np.diff(values) > 0))
+    starts = np.concatenate((np.zeros(1, dtype=np.intp), breaks + 1))
+    stops = np.concatenate((breaks + 1, np.array([n], dtype=np.intp)))
+    best = int(np.argmax(stops - starts))
+    return int(starts[best]), int(stops[best])
 
 
 @dataclass
@@ -128,6 +147,9 @@ class FittedParams:
         Anode inhomogeneity magnitude.
     inhom_ca : float
         Cathode inhomogeneity magnitude.
+    r_offset_ohm : float, optional
+        Fitted series resistance in Ohm. ``None`` means the fit did not carry
+        the resistance correction, which is the default.
     """
 
     alpha_an: float
@@ -138,6 +160,7 @@ class FittedParams:
     gamma_blend2_ca: float | None = 0.0
     inhom_an: float | None = 0.0
     inhom_ca: float | None = 0.0
+    r_offset_ohm: float | None = None
 
     # ============================================================
     # Derived stoichiometry properties for PyBaMM users
@@ -149,9 +172,10 @@ class FittedParams:
         Fraction of anode electrode capacity used by the cell (1/alpha_an).
 
         A value of 0.95 means 95% of the anode's theoretical capacity
-        is utilized in the cell's operating window.
+        is utilized in the cell's operating window. A zero ``alpha_an``
+        describes an electrode of unbounded capacity and returns ``inf``.
         """
-        return 1.0 / self.alpha_an
+        return 1.0 / self.alpha_an if self.alpha_an != 0 else float("inf")
 
     @property
     def utilization_ca(self) -> float:
@@ -159,9 +183,10 @@ class FittedParams:
         Fraction of cathode electrode capacity used by the cell (1/alpha_ca).
 
         A value of 0.90 means 90% of the cathode's theoretical capacity
-        is utilized in the cell's operating window.
+        is utilized in the cell's operating window. A zero ``alpha_ca``
+        describes an electrode of unbounded capacity and returns ``inf``.
         """
-        return 1.0 / self.alpha_ca
+        return 1.0 / self.alpha_ca if self.alpha_ca != 0 else float("inf")
 
     @property
     def sto_init_an(self) -> float:
@@ -187,9 +212,11 @@ class FittedParams:
         At 0% cell SOC, cathode is highly lithiated (discharged state).
         Example: sto_init_ca = 0.91 means c_init_ca = 0.91 × c_max_ca
         """
-        # Convert from delithiation curve position to lithiation fraction
-        delith_position = self.beta_ca / self.alpha_ca
-        return 1.0 + delith_position
+        # The fit places the cathode on its delithiation axis; the position there
+        # at 0% cell SOC is the same -beta/alpha the anode uses. Lithiation is its
+        # complement.
+        sto_delith_at_0 = -self.beta_ca / self.alpha_ca
+        return 1.0 - sto_delith_at_0
 
     @property
     def sto_window_an(self) -> tuple[float, float]:
@@ -316,8 +343,10 @@ class FittedParams:
         Returns
         -------
         FittedParams
-            New instance with anchored alpha/beta. ``gamma_blend2_*`` and
-            ``inhom_*`` are copied through unchanged.
+            New instance with anchored alpha/beta. ``gamma_blend2_*``,
+            ``inhom_*`` and ``r_offset_ohm`` are copied through unchanged; the
+            resistance term shifts the voltage level, not the SOC window the
+            anchoring rescales.
 
         Raises
         ------
@@ -364,29 +393,44 @@ class FittedParams:
             gamma_blend2_ca=self.gamma_blend2_ca,
             inhom_an=self.inhom_an,
             inhom_ca=self.inhom_ca,
+            r_offset_ohm=self.r_offset_ohm,
         )
 
     @classmethod
     def from_array(cls, params: np.ndarray) -> "FittedParams":
         """
-        Create from 8-element parameter array.
+        Create from a parameter array of 4 to 9 elements.
 
         Parameters
         ----------
         params : np.ndarray
-            8-element array in standard parameter order.
+            Array in standard parameter order. Slots the array does not reach
+            are filled with 0.0, except the resistance offset: a vector that
+            stops short of the ninth slot has no resistance to report and
+            leaves ``r_offset_ohm`` at ``None``, while a ninth component
+            becomes a float. :meth:`to_array` writes that ``None`` back as
+            0.0, which leaves the reconstruction untouched either way.
 
         Returns
         -------
         FittedParams
             Instance populated from array.
+
+        Raises
+        ------
+        ValueError
+            If the array holds fewer than 4 or more than 9 elements. A longer
+            array carries a slot this layout has no name for, which is a
+            mismatch rather than something to truncate.
         """
         params = np.asarray(params).flatten()
         if len(params) < 4:
             raise ValueError(f"params must have at least 4 elements, got {len(params)}")
+        if len(params) > 9:
+            raise ValueError(f"params must have at most 9 elements, got {len(params)}")
 
-        # Pad to 8 elements if needed
-        full_params = np.zeros(8)
+        # Pad to 9 elements if needed
+        full_params = np.zeros(9)
         full_params[: len(params)] = params
 
         return cls(
@@ -398,16 +442,62 @@ class FittedParams:
             gamma_blend2_ca=full_params[5],
             inhom_an=full_params[6],
             inhom_ca=full_params[7],
+            r_offset_ohm=float(params[8]) if len(params) > 8 else None,
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FittedParams":
+        """
+        Create from a :meth:`to_dict` mapping.
+
+        The derived entries ``to_dict`` adds (``utilization_*``,
+        ``sto_init_*``, ``sto_window_*``) are recomputed from the stored
+        alpha/beta and are therefore ignored here, which makes
+        ``FittedParams.from_dict(p.to_dict())`` a faithful round trip.
+
+        Parameters
+        ----------
+        data : dict
+            Mapping holding at least ``alpha_an``, ``beta_an``, ``alpha_ca``
+            and ``beta_ca``.
+
+        Returns
+        -------
+        FittedParams
+            Instance populated from the mapping.
+        """
+        missing = [k for k in ("alpha_an", "beta_an", "alpha_ca", "beta_ca") if k not in data]
+        if missing:
+            raise ValueError(f"FittedParams.from_dict is missing required key(s): {missing}.")
+
+        return cls(
+            alpha_an=float(data["alpha_an"]),
+            beta_an=float(data["beta_an"]),
+            alpha_ca=float(data["alpha_ca"]),
+            beta_ca=float(data["beta_ca"]),
+            gamma_blend2_an=data.get("gamma_blend2_an", 0.0),
+            gamma_blend2_ca=data.get("gamma_blend2_ca", 0.0),
+            inhom_an=data.get("inhom_an", 0.0),
+            inhom_ca=data.get("inhom_ca", 0.0),
+            r_offset_ohm=data.get("r_offset_ohm"),
         )
 
     def to_array(self) -> np.ndarray:
         """
-        Convert to 8-element parameter array.
+        Convert to 9-element parameter array.
 
         Returns
         -------
         np.ndarray
-            8-element array in standard parameter order.
+            9-element array in standard parameter order.
+
+        Notes
+        -----
+        The array has no place for "not fitted": a ``None`` gamma, inhom or
+        resistance serialises as ``0.0``, so a round trip through the array
+        turns "blend disabled" into "blend fitted at zero". Use :meth:`to_dict`
+        where that distinction matters. A zero in the resistance slot leaves
+        the reconstruction untouched, so that particular collapse is harmless.
         """
         return np.array(
             [
@@ -419,6 +509,7 @@ class FittedParams:
                 self.gamma_blend2_ca if self.gamma_blend2_ca is not None else 0.0,
                 self.inhom_an if self.inhom_an is not None else 0.0,
                 self.inhom_ca if self.inhom_ca is not None else 0.0,
+                self.r_offset_ohm if self.r_offset_ohm is not None else 0.0,
             ],
             dtype=float,
         )
@@ -434,6 +525,7 @@ class FittedParams:
             "gamma_blend2_ca": self.gamma_blend2_ca,
             "inhom_an": self.inhom_an,
             "inhom_ca": self.inhom_ca,
+            "r_offset_ohm": self.r_offset_ohm,
             # Derived stoichiometry values for PyBaMM users
             "utilization_an": self.utilization_an,
             "utilization_ca": self.utilization_ca,
@@ -471,6 +563,8 @@ class FittedParams:
         inhom_ca = self.inhom_ca or 0.0
         if inhom_an > 0 or inhom_ca > 0:
             lines.append(f"  Inhom:   an={inhom_an:.4f}, ca={inhom_ca:.4f}")
+        if self.r_offset_ohm is not None:
+            lines.append(f"  R:       {self.r_offset_ohm * 1000.0:.2f} mOhm")
         return "\n".join(lines)
 
     def __str__(self) -> str:
@@ -543,6 +637,14 @@ class DMAResult:
         Status string ('accepted', 'rejected_above_threshold', etc.).
     algorithm : str
         Algorithm used for optimization.
+
+    config_snapshot : dict
+        The ``DMAConfig`` this fit ran with, as a plain dict. A result read
+        back months later carries the settings that produced it.
+    param_std : np.ndarray, optional
+        Standard deviation of the parameters over the accepted runs, ``None``
+        when no run met the threshold. With ``req_accepted = 1`` there is one
+        accepted run and the entries are all zero.
     """
 
     cu_name: str = ""
@@ -607,6 +709,10 @@ class DMAResult:
     status: str = "accepted"
     algorithm: str = "differential_evolution"
 
+    # Fit provenance
+    config_snapshot: dict[str, Any] = field(default_factory=dict)
+    param_std: np.ndarray | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """
         Convert result to dictionary for serialization.
@@ -615,6 +721,14 @@ class DMAResult:
         -------
         dict
             Dictionary containing all result data.
+
+        Notes
+        -----
+        The measured and reconstructed curves stay out of the dictionary, as
+        they do for every other array on this class: they are one array per
+        grid point and belong in the pickle, not in a summary record. The
+        nine-element ``param_std`` is provenance rather than a curve, so it is
+        carried as a list, and a run without accepted runs keeps its ``None``.
         """
         return {
             "cu_name": self.cu_name,
@@ -631,6 +745,8 @@ class DMAResult:
             "is_accepted": self.is_accepted,
             "status": self.status,
             "algorithm": self.algorithm,
+            "config_snapshot": dict(self.config_snapshot),
+            "param_std": None if self.param_std is None else np.asarray(self.param_std).tolist(),
         }
 
     # ============================================================
@@ -669,12 +785,31 @@ class DMAResult:
         that the simulator delivers the measured nominal capacity over the
         voltage-bounded window without an external ``window_scale`` patch.
 
+        Only the longest stretch on which the reconstruction rises strictly with
+        SOC is inverted. A cell OCV is strictly increasing in SOC, so anything
+        flat or falling in the reconstruction is an artefact — typically the
+        electrode interpolants running into their fill values near the ends —
+        and inverting across it would map one voltage to several SOC values.
+        ``reconstructed_v_min`` / ``reconstructed_v_max`` are the two ends of
+        that stretch, not of the whole array.
+
+        The inversion runs on the reconstruction as fitted, so an active
+        ``r_offset_ohm`` is part of the curve being inverted. It is a pure
+        level term bounded by ``resistance_offset_limit_ohm_ah`` times the
+        C-rate: at the default 0.25 Ohm*Ah and C/20 it reaches 12.5 mV, and it
+        moves the anchored SOC endpoints by whatever that is worth on the local
+        slope of the curve.
+
         Parameters
         ----------
         v_min : float, optional
-            Lower voltage cutoff. Defaults to ``min(self.measured_voltage)``.
+            Lower voltage cutoff. Defaults to the lower end of the invertible
+            reconstruction.
         v_max : float, optional
-            Upper voltage cutoff. Defaults to ``max(self.measured_voltage)``.
+            Upper voltage cutoff. Defaults to its upper end. The default is
+            read off the reconstruction rather than the measurement because the
+            reconstruction ends inside the measured voltage range on a real
+            fit, so the measured cutoffs would ask for extrapolation.
         on_out_of_range : {"raise", "clip"}, default "raise"
             Policy when a requested cutoff lies outside the reconstructed OCV
             range. ``"raise"`` preserves the strict historical behavior and
@@ -699,9 +834,10 @@ class DMAResult:
         Raises
         ------
         ValueError
-            If reconstructed OCV / SOC arrays are empty, or if the requested
-            voltage cutoffs lie outside the reconstructed range so inversion
-            would extrapolate.
+            If reconstructed OCV / SOC arrays are empty, if the strictly
+            increasing stretch covers less than half of the reconstruction, or
+            if the requested voltage cutoffs lie outside that stretch so
+            inversion would extrapolate.
         """
         soc = np.asarray(self.soc_reconstructed, dtype=float)
         v = np.asarray(self.ocv_reconstructed, dtype=float)
@@ -711,25 +847,32 @@ class DMAResult:
                 "ocv_reconstructed to be populated. Run the analysis first."
             )
 
-        meas_v = np.asarray(self.measured_voltage, dtype=float)
-        if v_min is None:
-            if meas_v.size == 0:
-                raise ValueError("v_min not provided and measured_voltage is empty.")
-            v_min = float(np.min(meas_v))
-        if v_max is None:
-            if meas_v.size == 0:
-                raise ValueError("v_max not provided and measured_voltage is empty.")
-            v_max = float(np.max(meas_v))
+        # Invert only where the reconstruction actually rises with SOC.
+        order = np.argsort(soc, kind="stable")
+        soc_by_soc = soc[order]
+        v_by_soc = v[order]
+        start, stop = _longest_increasing_run(v_by_soc)
+        n_used = stop - start
+        if n_used < 0.5 * int(v_by_soc.size):
+            raise ValueError(
+                f"The reconstructed OCV rises strictly with SOC on only {n_used} of "
+                f"{int(v_by_soc.size)} samples (SOC [{float(soc_by_soc[start]):.4f}, "
+                f"{float(soc_by_soc[stop - 1]):.4f}], V [{float(v_by_soc[start]):.4f}, "
+                f"{float(v_by_soc[stop - 1]):.4f}] V); anchoring needs at least half "
+                "of the curve."
+            )
 
-        # The reconstructed OCV is monotone in SOC for a well-posed fit.
-        # Sort by voltage to make np.interp safe regardless of SOC ordering.
-        order = np.argsort(v)
-        v_sorted = v[order]
-        soc_sorted = soc[order]
+        v_seg = v_by_soc[start:stop]
+        soc_seg = soc_by_soc[start:stop]
+        v_sorted, unique_idx = np.unique(v_seg, return_index=True)
+        soc_sorted = soc_seg[unique_idx]
 
         v_lo, v_hi = float(v_sorted[0]), float(v_sorted[-1])
-        requested_v_min = float(v_min)
-        requested_v_max = float(v_max)
+        # The defaults anchor to the invertible stretch itself, which is the
+        # widest window this method can serve without extrapolating.
+        requested_v_min = v_lo if v_min is None else float(v_min)
+        requested_v_max = v_hi if v_max is None else float(v_max)
+        v_min, v_max = requested_v_min, requested_v_max
         if on_out_of_range not in {"raise", "clip"}:
             raise ValueError(
                 "on_out_of_range must be either 'raise' or 'clip', " f"got {on_out_of_range!r}."
@@ -800,9 +943,25 @@ class DMAResult:
         gamma: float | None = None,
         allow_extrapolation: bool = False,
         label: str = "electrode",
+        cathode_convention: str = "lithiation",
     ) -> np.ndarray:
-        """Evaluate an electrode/tuple/callable voltage model on stoichiometry."""
+        """Evaluate an electrode/tuple/callable voltage model on stoichiometry.
+
+        ``cathode_convention`` says which axis the supplied OCP is tabulated on.
+        ``"lithiation"`` reads it at ``sto`` (PyDMA's own convention, in which
+        ``sto_window_ca`` is a lithiation fraction x). ``"delithiation"`` reads
+        it at ``1 - sto``, for a cathode OCP tabulated against the delithiated
+        fraction. The setting is meaningless for an anode, which is why it
+        defaults to the identity.
+        """
+        if cathode_convention not in {"lithiation", "delithiation"}:
+            raise ValueError(
+                "cathode_convention must be either 'lithiation' or 'delithiation', "
+                f"got {cathode_convention!r}."
+            )
         sto = np.asarray(sto, dtype=float)
+        if cathode_convention == "delithiation":
+            sto = 1.0 - sto
 
         if callable(electrode):
             return np.asarray(electrode(sto), dtype=float)
@@ -864,6 +1023,7 @@ class DMAResult:
         gamma_ca: float | None = None,
         allow_extrapolation: bool = False,
         n_points: int = 4001,
+        cathode_convention: str = "lithiation",
     ) -> dict[str, Any]:
         """
         Voltage-anchor the export window using a supplied OCP voltage model.
@@ -906,6 +1066,18 @@ class DMAResult:
             intentionally want extrapolation.
         n_points : int, default 4001
             Number of samples used to build the export voltage curve.
+        cathode_convention : {"lithiation", "delithiation"}, default "lithiation"
+            Axis the supplied ``cathode_ocp`` is tabulated on. PyDMA's fitted
+            ``sto_ca`` is a lithiation fraction, so the default reads the model
+            at ``sto_ca``; ``"delithiation"`` reads it at ``1 - sto_ca``.
+
+        Raises
+        ------
+        ValueError
+            If the anchored window has a non-positive width on either
+            electrode. On a cathode OCP that is tabulated the other way round,
+            the exported window comes out reversed, so this is where a wrong
+            ``cathode_convention`` surfaces.
         """
         if on_out_of_range not in {"raise", "clip"}:
             raise ValueError(
@@ -954,6 +1126,7 @@ class DMAResult:
             gamma=gamma_ca,
             allow_extrapolation=allow_extrapolation,
             label="cathode_ocp",
+            cathode_convention=cathode_convention,
         )
         v_model = u_ca - u_an
 
@@ -993,6 +1166,16 @@ class DMAResult:
         util_an = sto_an_high - sto_an_low
         util_ca = sto_ca_low - sto_ca_high
 
+        if util_an <= 0 or util_ca <= 0:
+            raise ValueError(
+                f"Voltage anchoring produced a window of non-positive width "
+                f"(anode {util_an:.6g}, cathode {util_ca:.6g}) between "
+                f"{v_min:.4f} V and {v_max:.4f} V. The cell voltage of the supplied "
+                f"OCP models does not rise along the fitted trajectory. With "
+                f"cathode_convention={cathode_convention!r} in use, a cathode OCP "
+                "tabulated on the other axis is the first thing to check."
+            )
+
         out: dict[str, Any] = {
             "v_min": v_min,
             "v_max": v_max,
@@ -1016,6 +1199,7 @@ class DMAResult:
             "post_processed_only": True,
             "fit_is_unchanged": True,
             "allow_extrapolation": bool(allow_extrapolation),
+            "cathode_convention": cathode_convention,
             "raw_fitted_params": p.to_dict(),
             "low_voltage_endpoint": {
                 "voltage": v_min,
@@ -1033,13 +1217,18 @@ class DMAResult:
             },
         }
 
+        # A blend electrode without gamma cannot reach this point: the evaluation
+        # above raises on it. Checked rather than asserted so the invariant
+        # survives python -O.
         if hasattr(anode_ocp, "get_component_stoichiometry_window"):
-            assert gamma_an is not None  # blend anode: _interp above would have raised
+            if gamma_an is None:
+                raise RuntimeError("Blend anode reached the phase window without a gamma.")
             out["anode_phase_window"] = anode_ocp.get_component_stoichiometry_window(
                 float(gamma_an), out["sto_window_an"]
             )
         if hasattr(cathode_ocp, "get_component_stoichiometry_window"):
-            assert gamma_ca is not None  # blend cathode: _interp above would have raised
+            if gamma_ca is None:
+                raise RuntimeError("Blend cathode reached the phase window without a gamma.")
             out["cathode_phase_window"] = cathode_ocp.get_component_stoichiometry_window(
                 float(gamma_ca), out["sto_window_ca"]
             )
@@ -1060,6 +1249,7 @@ class DMAResult:
         gamma_an: float | None = None,
         allow_extrapolation: bool = False,
         n_points: int = 4001,
+        cathode_convention: str = "lithiation",
     ) -> dict[str, Any]:
         """
         Export a voltage-anchored blend window as per-phase PyBaMM values.
@@ -1095,7 +1285,8 @@ class DMAResult:
             Component active-material volume fractions. If all three volume
             fractions are supplied, per-phase ``c_max / c_max_blend`` factors
             are returned even when ``c_max_blend`` itself is omitted.
-        v_min, v_max, on_out_of_range, gamma_an, allow_extrapolation, n_points
+        v_min, v_max, on_out_of_range, gamma_an, allow_extrapolation, n_points,
+        cathode_convention
             Passed to :meth:`voltage_anchored_windows_from_ocp_model`.
 
         Returns
@@ -1104,22 +1295,37 @@ class DMAResult:
             Corrected per-phase stoichiometry windows, ``c_max`` values,
             initial concentrations, raw blend normalization metadata, and a
             capacity consistency check. The raw fit is not modified.
+
+            ``raw_capacity_share_blend1`` and ``raw_capacity_share_blend2`` are
+            the two components' contributions to the blend's raw capacity swing:
+            they sum to ``raw_blend_capacity_delta`` in raw blend units, not to
+            1. Divide by that delta for fractions.
+
+            ``phase_capacity_ratio_to_target`` is a numerical round-trip check:
+            it recombines the per-phase ``c_max`` values back into the blended
+            capacity and reports the ratio to the blended target, so it detects
+            an arithmetic slip in this conversion. It is 1 by construction
+            whenever the conversion is consistent and says nothing about whether
+            the underlying volume fractions describe the real cell.
         """
         if not hasattr(anode_blend, "get_component_stoichiometry_window"):
             raise TypeError("anode_blend must provide get_component_stoichiometry_window.")
 
-        have_eps = eps_total is not None and eps_blend1 is not None and eps_blend2 is not None
         if c_max_blend is not None:
             c_max_blend = float(c_max_blend)
             if c_max_blend <= 0:
                 raise ValueError(f"c_max_blend must be positive, got {c_max_blend}.")
-        if any(v is not None for v in (eps_total, eps_blend1, eps_blend2)) and not have_eps:
-            raise ValueError("eps_total, eps_blend1, and eps_blend2 must be supplied together.")
-        if eps_total is not None and eps_blend1 is not None and eps_blend2 is not None:
-            eps_total = float(eps_total)
-            eps_blend1 = float(eps_blend1)
-            eps_blend2 = float(eps_blend2)
-            if eps_total <= 0 or eps_blend1 <= 0 or eps_blend2 <= 0:
+
+        # One gate for the three volume fractions: they are only usable together,
+        # and every block below reads them from this single tuple.
+        eps: tuple[float, float, float] | None
+        if eps_total is None or eps_blend1 is None or eps_blend2 is None:
+            if any(v is not None for v in (eps_total, eps_blend1, eps_blend2)):
+                raise ValueError("eps_total, eps_blend1, and eps_blend2 must be supplied together.")
+            eps = None
+        else:
+            eps = (float(eps_total), float(eps_blend1), float(eps_blend2))
+            if min(eps) <= 0:
                 raise ValueError("eps_total, eps_blend1, and eps_blend2 must all be positive.")
 
         if gamma_an is None:
@@ -1141,6 +1347,7 @@ class DMAResult:
             gamma_an=gamma_an,
             allow_extrapolation=allow_extrapolation,
             n_points=n_points,
+            cathode_convention=cathode_convention,
         )
         if "anode_phase_window" not in export:
             raise ValueError("Voltage export did not produce an anode phase window.")
@@ -1170,10 +1377,10 @@ class DMAResult:
             "post_processed_only": True,
             "fit_is_unchanged": True,
             "gamma_blend2": gamma_an,
-            "c_max_blend": float(c_max_blend) if c_max_blend is not None else None,
-            "eps_total": eps_total,
-            "eps_blend1": eps_blend1,
-            "eps_blend2": eps_blend2,
+            "c_max_blend": c_max_blend,
+            "eps_total": eps[0] if eps is not None else None,
+            "eps_blend1": eps[1] if eps is not None else None,
+            "eps_blend2": eps[2] if eps is not None else None,
             "raw_blend_min": raw_blend_min,
             "raw_blend_max": raw_blend_max,
             "raw_blend_range": raw_blend_range,
@@ -1193,9 +1400,10 @@ class DMAResult:
             "voltage_anode_100soc": float(window["voltage_100soc"]),
         }
 
-        if eps_total is not None and eps_blend1 is not None and eps_blend2 is not None:
-            c_max_blend1_per_blend = (1.0 - gamma_an) * eps_total / (eps_blend1 * raw_blend_range)
-            c_max_blend2_per_blend = gamma_an * eps_total / (eps_blend2 * raw_blend_range)
+        if eps is not None:
+            eps_all, eps_1, eps_2 = eps
+            c_max_blend1_per_blend = (1.0 - gamma_an) * eps_all / (eps_1 * raw_blend_range)
+            c_max_blend2_per_blend = gamma_an * eps_all / (eps_2 * raw_blend_range)
             out.update(
                 {
                     "c_max_blend1_per_c_max_blend": c_max_blend1_per_blend,
@@ -1203,36 +1411,29 @@ class DMAResult:
                 }
             )
 
-        if (
-            c_max_blend is not None
-            and eps_total is not None
-            and eps_blend1 is not None
-            and eps_blend2 is not None
-        ):
-            c_max_blend1 = float(c_max_blend) * out["c_max_blend1_per_c_max_blend"]
-            c_max_blend2 = float(c_max_blend) * out["c_max_blend2_per_c_max_blend"]
-            phase_capacity_delta = (
-                eps_blend1 * c_max_blend1 * util1 + eps_blend2 * c_max_blend2 * util2
-            )
-            target_capacity_delta = eps_total * float(c_max_blend) * blend_util
-            capacity_ratio = (
-                phase_capacity_delta / target_capacity_delta
-                if target_capacity_delta != 0
-                else float("nan")
-            )
-            out.update(
-                {
-                    "c_max_blend1": c_max_blend1,
-                    "c_max_blend2": c_max_blend2,
-                    "c_init_blend1_0soc": sto1_low * c_max_blend1,
-                    "c_init_blend1_100soc": sto1_high * c_max_blend1,
-                    "c_init_blend2_0soc": sto2_low * c_max_blend2,
-                    "c_init_blend2_100soc": sto2_high * c_max_blend2,
-                    "phase_capacity_delta_mol_m3_electrode": phase_capacity_delta,
-                    "target_capacity_delta_mol_m3_electrode": target_capacity_delta,
-                    "phase_capacity_ratio_to_target": capacity_ratio,
-                }
-            )
+            if c_max_blend is not None:
+                c_max_blend1 = c_max_blend * c_max_blend1_per_blend
+                c_max_blend2 = c_max_blend * c_max_blend2_per_blend
+                phase_capacity_delta = eps_1 * c_max_blend1 * util1 + eps_2 * c_max_blend2 * util2
+                target_capacity_delta = eps_all * c_max_blend * blend_util
+                capacity_ratio = (
+                    phase_capacity_delta / target_capacity_delta
+                    if target_capacity_delta != 0
+                    else float("nan")
+                )
+                out.update(
+                    {
+                        "c_max_blend1": c_max_blend1,
+                        "c_max_blend2": c_max_blend2,
+                        "c_init_blend1_0soc": sto1_low * c_max_blend1,
+                        "c_init_blend1_100soc": sto1_high * c_max_blend1,
+                        "c_init_blend2_0soc": sto2_low * c_max_blend2,
+                        "c_init_blend2_100soc": sto2_high * c_max_blend2,
+                        "phase_capacity_delta_mol_m3_electrode": phase_capacity_delta,
+                        "target_capacity_delta_mol_m3_electrode": target_capacity_delta,
+                        "phase_capacity_ratio_to_target": capacity_ratio,
+                    }
+                )
 
         return out
 
@@ -1321,20 +1522,15 @@ class AgingStudyResults:
         Reference data from first CU.
     cu_labels : List[str]
         Ordered list of CU names.
-    efc_values : List[float]
-        Equivalent full cycles or CU numbers for each check-up.
-    is_cyclic : bool
-        Whether this is a cyclic (True) or calendar (False) aging study.
-    fit_reverse : bool
-        Whether fitting was performed in reverse order.
+    efc_values : List[float | None]
+        Equivalent full cycles or CU numbers for each check-up, one entry per
+        entry in ``cu_labels``. ``None`` where a check-up was added without one.
     """
 
     results: dict[str, DMAResult] = field(default_factory=dict)
     reference_data: ReferenceData | None = None
     cu_labels: list[str] = field(default_factory=list)
-    efc_values: list[float] = field(default_factory=list)
-    is_cyclic: bool = True
-    fit_reverse: bool = False
+    efc_values: list[float | None] = field(default_factory=list)
 
     def __getitem__(self, key: str) -> DMAResult:
         """Access result by CU name."""
@@ -1349,13 +1545,21 @@ class AgingStudyResults:
         return iter(self.cu_labels)
 
     @property
-    def cycle_numbers(self) -> list[float]:
+    def cycle_numbers(self) -> list[float | None]:
         """Alias for efc_values (backwards compatibility)."""
         return self.efc_values
 
     def add_result(self, result: DMAResult, efc: float | None = None):
         """
         Add a result to the study.
+
+        ``efc_values`` keeps one entry per CU, ``None`` included. Appending only
+        the known values would silently misalign every later EFC with the wrong
+        check-up as soon as one CU comes without one.
+
+        Re-adding a CU replaces its result. Its EFC survives that unless a new
+        one is passed, so refitting a check-up does not cost the study its
+        x-axis.
 
         Parameters
         ----------
@@ -1365,9 +1569,11 @@ class AgingStudyResults:
             EFC value for this CU.
         """
         self.results[result.cu_name] = result
-        if result.cu_name not in self.cu_labels:
+        if result.cu_name in self.cu_labels:
+            if efc is not None:
+                self.efc_values[self.cu_labels.index(result.cu_name)] = efc
+        else:
             self.cu_labels.append(result.cu_name)
-        if efc is not None:
             self.efc_values.append(efc)
 
         # Set reference data from first CU
@@ -1422,9 +1628,22 @@ class AgingStudyResults:
             data.append(row)
 
         df = pd.DataFrame(data)
-        if self.efc_values and len(self.efc_values) == len(df):
-            df.insert(1, "EFC", self.efc_values)
+        efc_column = self._efc_column(len(df))
+        if efc_column is not None:
+            df.insert(1, "EFC", efc_column)
         return df
+
+    def _efc_column(self, n_rows: int) -> list[float] | None:
+        """EFC values as a DataFrame column, or None when the study has none.
+
+        Check-ups added without an EFC hold a None placeholder; those become NaN
+        so the column stays aligned with the rows.
+        """
+        if len(self.efc_values) != n_rows:
+            return None
+        if not any(value is not None for value in self.efc_values):
+            return None
+        return [float("nan") if value is None else float(value) for value in self.efc_values]
 
     def get_params_dataframe(self) -> pd.DataFrame:
         """
@@ -1442,32 +1661,38 @@ class AgingStudyResults:
             data.append(row)
 
         df = pd.DataFrame(data)
-        if self.efc_values and len(self.efc_values) == len(df):
-            df.insert(1, "EFC", self.efc_values)
+        efc_column = self._efc_column(len(df))
+        if efc_column is not None:
+            df.insert(1, "EFC", efc_column)
         return df
 
-    def to_pickle(self, filepath: str):
+    def to_pickle(self, filepath: "str | os.PathLike[str]"):
         """
         Save results to pickle file.
 
         Parameters
         ----------
-        filepath : str
-            Path to save file.
+        filepath : str or path-like
+            Path to save file. Missing parent directories are created.
         """
         import pickle
 
-        with open(filepath, "wb") as f:
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
             pickle.dump(self, f)
 
     @classmethod
-    def from_pickle(cls, filepath: str) -> "AgingStudyResults":
+    def from_pickle(cls, filepath: "str | os.PathLike[str]") -> "AgingStudyResults":
         """
         Load results from pickle file.
 
+        Unpickling runs code embedded in the file, so only load pickles from a
+        source you trust — typically one this class wrote itself.
+
         Parameters
         ----------
-        filepath : str
+        filepath : str or path-like
             Path to pickle file.
 
         Returns
@@ -1481,13 +1706,13 @@ class AgingStudyResults:
             loaded: "AgingStudyResults" = pickle.load(f)
         return loaded
 
-    def to_csv(self, filepath: str):
+    def to_csv(self, filepath: "str | os.PathLike[str]"):
         """
         Save degradation results to CSV file.
 
         Parameters
         ----------
-        filepath : str
+        filepath : str or path-like
             Path to save file.
         """
         df = self.get_degradation_dataframe()
@@ -1504,8 +1729,6 @@ class AgingStudyResults:
         """
         lines = [
             f"Aging Study Results: {len(self)} check-ups",
-            f"Study type: {'Cyclic' if self.is_cyclic else 'Calendar'}",
-            f"Fit direction: {'Reverse' if self.fit_reverse else 'Forward'}",
             "",
             "Degradation Summary:",
         ]

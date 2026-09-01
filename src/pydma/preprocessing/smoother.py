@@ -6,9 +6,43 @@ various filtering methods including LOWESS, Savitzky-Golay, and
 moving average filters.
 """
 
+import warnings
+
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import savgol_filter
+
+
+def _prepare_lowess_input(
+    x: np.ndarray, y: np.ndarray, frac: float
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Build a duplicate-free, frac-clamped (x, y) pair ready for `lowess`.
+
+    `x`/`y` must already be restricted to the finite-`y` positions. Collapses
+    duplicate x by averaging y at identical positions and clamps frac to
+    (0, 1], since duplicate or unsorted x can otherwise produce invalid
+    weights in LOWESS.
+    """
+    sort_idx = np.argsort(x)
+    x_sorted = x[sort_idx]
+    y_sorted = y[sort_idx]
+    if x_sorted.size and np.any(np.diff(x_sorted) == 0):
+        x_unique, inv = np.unique(x_sorted, return_inverse=True)
+        y_accum = np.zeros_like(x_unique, dtype=np.float64)
+        counts = np.zeros_like(x_unique, dtype=np.float64)
+        for i, grp in enumerate(inv):
+            y_accum[grp] += y_sorted[i]
+            counts[grp] += 1.0
+        y_sorted = y_accum / np.maximum(counts, 1.0)
+        x_sorted = x_unique
+
+    frac = float(frac)
+    if frac <= 0:
+        frac = min(1.0, 2.0 / max(len(x_sorted), 2))
+    elif frac > 1:
+        frac = 1.0
+
+    return x_sorted, y_sorted, frac
 
 
 def smooth_lowess(
@@ -47,15 +81,13 @@ def smooth_lowess(
         from statsmodels.nonparametric.smoothers_lowess import lowess
     except ImportError:
         # Fallback to Savitzky-Golay if statsmodels not available
-        import warnings
-
         warnings.warn("statsmodels not available, falling back to Savitzky-Golay filter")
         window = max(3, int(frac * len(y)))
         if window % 2 == 0:
             window += 1
         return smooth_savgol(y, window)
 
-    y = np.asarray(y).flatten()
+    y = np.asarray(y, dtype=np.float64).flatten()
     n = len(y)
 
     # Guard against trivial inputs (avoids divide-by-zero warnings in statsmodels)
@@ -67,48 +99,24 @@ def smooth_lowess(
     else:
         x = np.asarray(x, dtype=np.float64).flatten()
 
-    # Handle NaN values
+    # Handle NaN values: valid-mask first, then the shared duplicate-collapse
+    # and frac-clamping prep (previously only applied on the NaN-free path),
+    # then lowess.
     valid_mask = ~np.isnan(y)
-    if not np.all(valid_mask):
-        y_valid = y[valid_mask]
-        x_valid = x[valid_mask]
-        if len(y_valid) < 2:
-            return y.copy()
-        smoothed_valid = lowess(y_valid, x_valid, frac=frac, it=it, return_sorted=False)
-        y_smooth = np.full_like(y, np.nan)
-        y_smooth[valid_mask] = smoothed_valid
-        return y_smooth
+    x_valid = x[valid_mask]
+    y_valid = y[valid_mask]
+    if len(y_valid) < 2:
+        return y.copy()
 
-    # Ensure x is strictly increasing and unique.
-    # Duplicate or unsorted x can produce invalid weights in LOWESS.
-    sort_idx = np.argsort(x)
-    x_sorted = x[sort_idx]
-    y_sorted = y[sort_idx]
-    if np.any(np.diff(x_sorted) == 0):
-        # Collapse duplicate x by averaging y at identical positions
-        x_unique, inv = np.unique(x_sorted, return_inverse=True)
-        y_accum = np.zeros_like(x_unique, dtype=np.float64)
-        counts = np.zeros_like(x_unique, dtype=np.float64)
-        for i, grp in enumerate(inv):
-            y_accum[grp] += y_sorted[i]
-            counts[grp] += 1.0
-        y_sorted = y_accum / np.maximum(counts, 1.0)
-        x_sorted = x_unique
-
-    # Clamp frac to a sensible range (LOWESS expects 0 < frac <= 1)
-    frac = float(frac)
-    if frac <= 0:
-        frac = min(1.0, 2.0 / max(len(x_sorted), 2))
-    elif frac > 1:
-        frac = 1.0
+    x_sorted, y_sorted, frac = _prepare_lowess_input(x_valid, y_valid, frac)
 
     # Apply LOWESS (sorted x)
     smoothed = lowess(y_sorted, x_sorted, frac=frac, it=it, return_sorted=False)
 
-    # Map smoothed data back to original x grid
-    smoothed = np.interp(x, x_sorted, smoothed)
-
-    return np.asarray(smoothed)
+    # Map smoothed data back to the original x grid; NaN positions stay NaN.
+    y_smooth = np.full_like(y, np.nan)
+    y_smooth[valid_mask] = np.interp(x_valid, x_sorted, smoothed)
+    return y_smooth
 
 
 def smooth_savgol(
@@ -158,6 +166,10 @@ def smooth_savgol(
             smoothed_valid = savgol_filter(y_valid, window_length, polyorder)
         except ValueError:
             # MATLAB behavior: if sgolayfilt fails, return original data
+            warnings.warn(
+                f"savgol_filter failed for window_length={window_length}, "
+                f"polyorder={polyorder} on {len(y_valid)} valid points; returning unsmoothed data."
+            )
             return y.copy()
         y_smooth = np.full_like(y, np.nan)
         y_smooth[valid_mask] = smoothed_valid
@@ -167,6 +179,10 @@ def smooth_savgol(
         return np.asarray(savgol_filter(y, window_length, polyorder))
     except ValueError:
         # MATLAB behavior: if sgolayfilt fails, return original data
+        warnings.warn(
+            f"savgol_filter failed for window_length={window_length}, "
+            f"polyorder={polyorder} on {len(y)} points; returning unsmoothed data."
+        )
         return y.copy()
 
 
@@ -182,12 +198,17 @@ def smooth_moving_average(
     y : np.ndarray
         Data to smooth.
     window : int
-        Window size for moving average.
+        Window size for moving average. Must be positive.
 
     Returns
     -------
     np.ndarray
         Smoothed data.
+
+    Raises
+    ------
+    ValueError
+        If ``window`` is not positive.
 
     Notes
     -----
@@ -195,7 +216,18 @@ def smooth_moving_average(
     We use scipy.ndimage.uniform_filter1d for efficiency.
     """
     y = np.asarray(y).flatten()
-    window = max(1, int(window))
+    window = int(window)
+    if window <= 0:
+        raise ValueError(f"smooth_moving_average needs a positive window, got {window!r}.")
+
+    # Handle NaN values
+    valid_mask = ~np.isnan(y)
+    if not np.all(valid_mask):
+        y_valid = y[valid_mask]
+        smoothed_valid = uniform_filter1d(y_valid, size=window, mode="nearest")
+        y_smooth = np.full_like(y, np.nan)
+        y_smooth[valid_mask] = smoothed_valid
+        return y_smooth
 
     return np.asarray(uniform_filter1d(y, size=window, mode="nearest"))
 
@@ -222,6 +254,16 @@ def smooth_gaussian(
     from scipy.ndimage import gaussian_filter1d
 
     y = np.asarray(y).flatten()
+
+    # Handle NaN values
+    valid_mask = ~np.isnan(y)
+    if not np.all(valid_mask):
+        y_valid = y[valid_mask]
+        smoothed_valid = gaussian_filter1d(y_valid, sigma=sigma, mode="nearest")
+        y_smooth = np.full_like(y, np.nan)
+        y_smooth[valid_mask] = smoothed_valid
+        return y_smooth
+
     return np.asarray(gaussian_filter1d(y, sigma=sigma, mode="nearest"))
 
 
@@ -299,8 +341,9 @@ def apply_filter(
         z = zscore(data, nan_policy="omit")
         outliers = np.abs(z) > 3
         if np.any(outliers):
-            # Linear interpolation for outliers
-            valid = ~outliers
+            # Linear interpolation for outliers; NaN must not serve as an
+            # interpolation anchor even where it happens to pass the outlier test.
+            valid = ~outliers & ~np.isnan(data)
             x = np.arange(n)
             data = data.copy()
             data[outliers] = np.interp(x[outliers], x[valid], data[valid])
@@ -351,6 +394,11 @@ def assure_non_zero_dv(voltage: np.ndarray, eps: float = 1e-10) -> np.ndarray:
     Notes
     -----
     DIFFERENCE FROM MATLAB: Replicates assure_non_zero_dV.m behavior.
+
+    The correction is one-directional: whenever two consecutive values are
+    within `eps` of each other, the later one is always nudged *upward* to
+    `voltage[i - 1] + eps`, even if it started out marginally below its
+    predecessor. The sign of the original difference is not preserved.
     """
     voltage = np.asarray(voltage).flatten().copy()
     n = len(voltage)

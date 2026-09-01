@@ -34,6 +34,7 @@ Example
 
 import warnings
 from collections.abc import Callable
+from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -47,11 +48,11 @@ from pydma.analysis.ica import calculate_ica, precompute_ica
 from pydma.core.objectives import PenaltyConfig, PreviousLAM
 from pydma.core.objectives import ReferenceData as ObjectiveRefData
 from pydma.core.objectives import (
-    _interp1_linear_fill0,
     combined_objective,
     fit_dva,
     fit_ica,
     fit_ocv,
+    interp_linear_fill0,
     objective_with_penalty,
 )
 from pydma.core.optimizer import DMAOptimizer, MultiRunResult
@@ -132,6 +133,11 @@ class DMAAnalyzer:
         self._capacity_history: list[float] = []  # Track capacity across CUs for warning
         self._normalized_soc_warning_issued: bool = False  # Only warn once
         self._reorientation_warning_issued: bool = False  # Only warn once
+        # Electrode types already warned about; anode and cathode are tracked
+        # apart so the first warning does not hide the other electrode's span.
+        self._extrapolation_warned_types: set[str] = set()
+        # Orientation of the previous CU; a change across CUs is inconsistent
+        self._previous_orientation_corrected: bool | None = None
 
     def set_anode(
         self,
@@ -225,6 +231,37 @@ class DMAAnalyzer:
                 UserWarning,
                 stacklevel=3,
             )
+
+    def _resistance_offset_terms(self) -> tuple[float, float]:
+        """Sign and current magnitude of the series-resistance term.
+
+        A pOCV measured while charging lies above the OCV and one measured
+        while discharging lies below it, so the direction carries the sign.
+        With it, one fitted resistance means the same thing in both
+        directions instead of changing sign with the protocol.
+        """
+        sign = -1.0 if self.config.direction == "discharge" else 1.0
+        return sign, abs(float(self.config.pocv_current_a))
+
+    @staticmethod
+    def _warn_on_resistance_at_bound(value: float, lower: float, upper: float) -> None:
+        """Report a resistance that the optimizer pushed onto its bound."""
+        span = upper - lower
+        if span <= 0:
+            return
+        if min(abs(value - lower), abs(value - upper)) >= 1e-3 * span:
+            return
+
+        warnings.warn(
+            f"Fitted series resistance {value * 1000.0:.3f} mOhm sits on its bound "
+            f"[{lower * 1000.0:.3f}, {upper * 1000.0:.3f}] mOhm. A resistance that "
+            "runs into the bound reports a level correction the rest of the model "
+            "cannot make, not a resistance: check the pOCV current, the half-cell "
+            "curves and resistance_offset_limit_ohm_ah before reading the value as "
+            "a cell property.",
+            UserWarning,
+            stacklevel=3,
+        )
 
     @property
     def anode_is_blend(self) -> bool:
@@ -328,14 +365,58 @@ class DMAAnalyzer:
         if not drop_decreasing:
             return x, y
 
-        # Drop points that would make x decrease
-        keep = np.zeros_like(x, dtype=bool)
-        last = -np.inf
-        for i, val in enumerate(x):
-            if np.isfinite(val) and val >= last:
-                keep[i] = True
-                last = val
+        # Keep the points that are finite and at least as large as the running
+        # maximum. Non-finite points rank as -inf, so they are dropped without
+        # raising the running maximum, which makes it equal to the running
+        # maximum over the kept points.
+        ranked = np.where(np.isfinite(x), x, -np.inf)
+        running_max = np.empty(x.shape, dtype=np.float64)
+        running_max[0] = -np.inf
+        np.maximum.accumulate(ranked[:-1], out=running_max[1:])
+        keep = np.isfinite(x) & (x >= running_max)
+
+        n_dropped = int(x.size - np.count_nonzero(keep))
+        if n_dropped >= 0.02 * x.size and n_dropped > 0:
+            warnings.warn(
+                f"Dropped {n_dropped} of {x.size} points "
+                f"({n_dropped / x.size:.1%}) to enforce an increasing axis.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         return x[keep], y[keep]
+
+    def _check_extrapolation_span(
+        self,
+        soc_sorted: NDArray[np.floating],
+        electrode_name: str | None,
+        electrode_type: str,
+    ) -> None:
+        """Warn once per electrode type when resampling to [0, 1] extends the
+        measured SOC support."""
+        if electrode_type in self._extrapolation_warned_types:
+            return
+
+        soc_lo = float(soc_sorted[0])
+        soc_hi = float(soc_sorted[-1])
+        span = soc_hi - soc_lo
+        if span <= 0:
+            return
+
+        below = soc_lo - 0.0
+        above = 1.0 - soc_hi
+        if max(below, above) <= 0.01 * span:
+            return
+
+        self._extrapolation_warned_types.add(electrode_type)
+        name = electrode_name or "electrode"
+        warnings.warn(
+            f"Half-cell curve '{name}' covers SOC [{soc_lo:.4f}, {soc_hi:.4f}]; "
+            "resampling to [0, 1] continues it linearly beyond that support by "
+            f"{below:.4f} below and {above:.4f} above.",
+            UserWarning,
+            stacklevel=3,
+        )
 
     def _prepare_single_electrode(self, electrode: ElectrodeOCP) -> ElectrodeOCP:
         """Prepare non-blend electrode to match MATLAB preprocessing."""
@@ -361,6 +442,7 @@ class DMAAnalyzer:
             sort_idx = np.argsort(soc)
             soc_sorted = soc[sort_idx]
             volt_sorted = voltage[sort_idx]
+            self._check_extrapolation_span(soc_sorted, electrode.name, electrode.electrode_type)
             volt_uniform = self._interp_linear_extrap(soc_sorted, volt_sorted, soc_uniform)
         else:
             volt_uniform = np.full_like(soc_uniform, voltage[0] if len(voltage) else 0.0)
@@ -493,6 +575,9 @@ class DMAAnalyzer:
         # Calculate cap_span BEFORE normalizing capacity
         # This preserves the actual Ah span for downstream degradation calculations
         cap_span = float(meas_capacity.max() - meas_capacity.min())
+        # Checked before the polyfit below, which needs a non-degenerate axis
+        if cap_span <= 0:
+            raise ValueError("Measured capacity must span a non-zero range.")
 
         # =============================================================================
         # VALIDATE FULL-CELL OCV CONVENTION
@@ -503,8 +588,19 @@ class DMAAnalyzer:
             meas_capacity,
             meas_voltage,
         )
-        if cap_span <= 0:
-            raise ValueError("Measured capacity must span a non-zero range.")
+        if (
+            self._previous_orientation_corrected is not None
+            and was_corrected != self._previous_orientation_corrected
+        ):
+            warnings.warn(
+                "Full-cell axis orientation changed between check-ups: the previous "
+                f"check-up needed reorientation={self._previous_orientation_corrected}, "
+                f"this one needs reorientation={was_corrected}. Mixing orientations "
+                "within one aging series makes the fitted parameters incomparable.",
+                UserWarning,
+                stacklevel=3,
+            )
+        self._previous_orientation_corrected = was_corrected
         if was_corrected and not self._reorientation_warning_issued:
             self._reorientation_warning_issued = True
             warnings.warn(
@@ -527,7 +623,7 @@ class DMAAnalyzer:
 
         meas_voltage = apply_filter(
             meas_voltage,
-            method=self.config.filter_type or "sgolay",
+            method=self.config.filter_type,
             **self.config.filter_kwargs,
         )
 
@@ -581,6 +677,8 @@ class DMAAnalyzer:
         effective_cathode = cathode if cathode is not None else self.cathode
         assert effective_anode is not None, "Anode must be set on analyzer or passed in"
         assert effective_cathode is not None, "Cathode must be set on analyzer or passed in"
+
+        r_offset_sign, pocv_current_abs = self._resistance_offset_terms()
 
         # Check if we should use penalty constraints
         # Penalty is applied when we have previous LAM values (not first CU)
@@ -642,7 +740,8 @@ class DMAAnalyzer:
                 ),
                 inhom_anode_offset=self.config.inhom_anode_offset,
                 inhom_cathode_offset=self.config.inhom_cathode_offset,
-                inhom_points=61,
+                r_offset_sign=r_offset_sign,
+                pocv_current_a=pocv_current_abs,
                 ref_data=ref_data,
                 prev_lam=self._previous_lam,
                 penalty_config=penalty_config,
@@ -673,7 +772,8 @@ class DMAAnalyzer:
                 ),
                 inhom_anode_offset=self.config.inhom_anode_offset,
                 inhom_cathode_offset=self.config.inhom_cathode_offset,
-                inhom_points=61,  # Fixed as per MATLAB implementation
+                r_offset_sign=r_offset_sign,
+                pocv_current_a=pocv_current_abs,
             )
 
     def analyze(
@@ -686,6 +786,7 @@ class DMAAnalyzer:
         actual_capacity: float | None = None,
         progress_callback: Callable[[int, int, int], None] | None = None,
         de_constraints: Any = None,
+        rmse_threshold: float | None = None,
         **kwargs: Any,
     ) -> DMAResult:
         """Perform Degradation Mode Analysis.
@@ -726,6 +827,10 @@ class DMAAnalyzer:
             phase lithium conservation. Most users should not need this; the
             standard OCV/DVA/ICA weighted objective is sufficient for
             single-CU fits.
+        rmse_threshold : float, optional
+            OCV RMSE in Volts below which a run is accepted. Defaults to
+            ``config.rmse_threshold``. The same value drives the optimizer's
+            acceptance loop and ``DMAResult.is_accepted``.
         **kwargs : Any
             Additional arguments passed to optimizer
 
@@ -767,11 +872,15 @@ class DMAAnalyzer:
             measured_capacity,
             measured_voltage,
         )
-        if actual_capacity is not None:
-            actual_capacity = float(actual_capacity)
-            if actual_capacity <= 0:
-                raise ValueError(f"actual_capacity must be positive, got {actual_capacity}")
-        effective_capacity = actual_capacity if actual_capacity is not None else cap_span
+        provided_capacity = None if actual_capacity is None else float(actual_capacity)
+        if provided_capacity is not None and provided_capacity <= 0:
+            raise ValueError(f"actual_capacity must be positive, got {provided_capacity}")
+        # Capacity all downstream capacity/LAM arithmetic runs on
+        fit_capacity = cap_span if provided_capacity is None else provided_capacity
+
+        effective_rmse_threshold = (
+            self.config.rmse_threshold if rmse_threshold is None else float(rmse_threshold)
+        )
 
         # Prepare electrodes to match MATLAB preprocessing.
         # _validate_inputs (above) ensures self.anode / self.cathode are set;
@@ -782,6 +891,22 @@ class DMAAnalyzer:
         cathode = self._prepare_electrode(self.cathode)
         anode_is_blend = isinstance(anode, BlendElectrode)
         cathode_is_blend = isinstance(cathode, BlendElectrode)
+
+        # The blend flags decide which parameter slots the optimizer opens, so
+        # an electrode model that disagrees with them fits a different cell
+        # than the configuration describes.
+        if anode_is_blend != self.config.use_anode_blend:
+            raise ValueError(
+                "anode is a BlendElectrode but config.use_anode_blend is False"
+                if anode_is_blend
+                else "config.use_anode_blend is True but anode is not a BlendElectrode"
+            )
+        if cathode_is_blend != self.config.use_cathode_blend:
+            raise ValueError(
+                "cathode is a BlendElectrode but config.use_cathode_blend is False"
+                if cathode_is_blend
+                else "config.use_cathode_blend is True but cathode is not a BlendElectrode"
+            )
 
         # Pre-compute DVA and ICA only when needed (MATLAB-compatible)
         # Skip computation when weight is 0 to save time
@@ -816,7 +941,7 @@ class DMAAnalyzer:
             dva_roi_mask,
             ica_roi_mask,
             q0,
-            actual_capacity=effective_capacity,
+            actual_capacity=fit_capacity,
             anode=anode,
             cathode=cathode,
             anode_is_blend=anode_is_blend,
@@ -824,6 +949,7 @@ class DMAAnalyzer:
         )
 
         # RMSE used for acceptance should be OCV RMSE in Volts, not sqrt(weighted-cost).
+        r_offset_sign, pocv_current_abs = self._resistance_offset_terms()
         ocv_mse_fn = partial(
             fit_ocv,
             anode=anode,
@@ -836,7 +962,8 @@ class DMAAnalyzer:
             cathode_is_blend=cathode_is_blend,
             inhom_anode_offset=self.config.inhom_anode_offset,
             inhom_cathode_offset=self.config.inhom_cathode_offset,
-            inhom_points=61,
+            r_offset_sign=r_offset_sign,
+            pocv_current_a=pocv_current_abs,
         )
 
         def rmse_fn(x: NDArray[np.floating]) -> float:
@@ -848,7 +975,11 @@ class DMAAnalyzer:
         # subsequent CUs are constrained by max_inhomogeneity_delta
         if self._is_first_cu and not self.config.allow_first_cycle_inhomogeneity:
             # First CU with inhomogeneity disabled - force inhom bounds to 0
-            lb, ub = self.config.get_full_bounds(inhom_an_prev=0.0, inhom_ca_prev=0.0)
+            lb, ub = self.config.get_full_bounds(
+                inhom_an_prev=0.0,
+                inhom_ca_prev=0.0,
+                capa_actual=fit_capacity,
+            )
             # Override to exactly 0 (no delta allowed from 0)
             lb[6] = 0.0
             ub[6] = 0.0
@@ -860,12 +991,14 @@ class DMAAnalyzer:
             lb, ub = self.config.get_full_bounds(
                 inhom_an_prev=self._previous_inhom_an,
                 inhom_ca_prev=self._previous_inhom_ca,
+                capa_actual=fit_capacity,
             )
             bounds = list(zip(lb, ub))
 
         initial_guess = self.config.get_initial_guess(
             inhom_an_prev=self._previous_inhom_an,
             inhom_ca_prev=self._previous_inhom_ca,
+            capa_actual=fit_capacity,
         )
 
         optimizer = DMAOptimizer(self.config, objective, bounds, rmse_fn=rmse_fn)
@@ -876,6 +1009,7 @@ class DMAAnalyzer:
 
         opt_result: MultiRunResult = optimizer.run(
             progress_callback=progress_callback,
+            rmse_threshold=effective_rmse_threshold,
             x0=initial_guess,
             **kwargs,
         )
@@ -889,12 +1023,12 @@ class DMAAnalyzer:
             beta_ca=params[3],
             gamma_blend2_an=params[4] if self.anode_is_blend else None,
             gamma_blend2_ca=params[5] if self.cathode_is_blend else None,
-            inhom_an=params[6] if self.config.enable_inhomogeneity else None,
-            inhom_ca=params[7] if self.config.enable_inhomogeneity else None,
+            inhom_an=params[6] if self.config.allow_anode_inhomogeneity else None,
+            inhom_ca=params[7] if self.config.allow_cathode_inhomogeneity else None,
+            r_offset_ohm=params[8] if self.config.allow_resistance_offset else None,
         )
-
-        # Compute degradation modes
-        actual_capacity = effective_capacity
+        if self.config.allow_resistance_offset:
+            self._warn_on_resistance_at_bound(float(params[8]), float(lb[8]), float(ub[8]))
 
         # Convert fitted params to parameter array for degradation
         # calculation. The degradation function expects:
@@ -905,20 +1039,20 @@ class DMAAnalyzer:
         # MATLAB behavior: first CU defines reference capacities from fitted params
         if self.reference_data is None:
             self.reference_data = ReferenceData(
-                capa_anode_init=fitted_params.alpha_an * actual_capacity,
-                capa_cathode_init=fitted_params.alpha_ca * actual_capacity,
+                capa_anode_init=fitted_params.alpha_an * fit_capacity,
+                capa_cathode_init=fitted_params.alpha_ca * fit_capacity,
                 capa_inventory_init=(
                     fitted_params.alpha_ca + fitted_params.beta_ca - fitted_params.beta_an
                 )
-                * actual_capacity,
+                * fit_capacity,
                 gamma_an_blend2_init=float(fitted_params.gamma_blend2_an or 0.0),
                 gamma_ca_blend2_init=float(fitted_params.gamma_blend2_ca or 0.0),
-                reference_capacity=actual_capacity,
+                reference_capacity=fit_capacity,
             )
 
         deg_result = calculate_degradation_modes(
             params=param_array,
-            capa_actual=actual_capacity,
+            capa_actual=fit_capacity,
             capa_anode_init=self.reference_data.capa_anode_init,
             capa_cathode_init=self.reference_data.capa_cathode_init,
             capa_inventory_init=self.reference_data.capa_inventory_init,
@@ -929,7 +1063,7 @@ class DMAAnalyzer:
         # Capacity loss based on measured capacity (relative to reference)
         ref_capacity = self.reference_capacity or self.reference_data.reference_capacity
         if ref_capacity and ref_capacity != 0:
-            capacity_loss = (ref_capacity - actual_capacity) / ref_capacity
+            capacity_loss = (ref_capacity - fit_capacity) / ref_capacity
         else:
             capacity_loss = 0.0
 
@@ -969,17 +1103,18 @@ class DMAAnalyzer:
         fit_ocv_mse = (
             fit_ocv(
                 param_array,
-                anode,
-                cathode,
-                meas_voltage,
-                q,
-                self.config.roi_ocv_min,
-                self.config.roi_ocv_max,
-                anode_is_blend,
-                cathode_is_blend,
-                self.config.inhom_anode_offset,
-                self.config.inhom_cathode_offset,
-                61,
+                anode=anode,
+                cathode=cathode,
+                meas_voltage=meas_voltage,
+                q=q,
+                roi_ocv_min=self.config.roi_ocv_min,
+                roi_ocv_max=self.config.roi_ocv_max,
+                anode_is_blend=anode_is_blend,
+                cathode_is_blend=cathode_is_blend,
+                inhom_anode_offset=self.config.inhom_anode_offset,
+                inhom_cathode_offset=self.config.inhom_cathode_offset,
+                r_offset_sign=r_offset_sign,
+                pocv_current_a=pocv_current_abs,
             )
             if self.config.weight_ocv > 0
             else 0.0
@@ -987,17 +1122,16 @@ class DMAAnalyzer:
         fit_dva_mse = (
             fit_dva(
                 param_array,
-                anode,
-                cathode,
-                meas_dva,
-                q,
-                dva_roi_mask,
-                q0,
-                anode_is_blend,
-                cathode_is_blend,
-                self.config.inhom_anode_offset,
-                self.config.inhom_cathode_offset,
-                61,
+                anode=anode,
+                cathode=cathode,
+                meas_dva=meas_dva,
+                q=q,
+                roi_mask=dva_roi_mask,
+                q0=q0,
+                anode_is_blend=anode_is_blend,
+                cathode_is_blend=cathode_is_blend,
+                inhom_anode_offset=self.config.inhom_anode_offset,
+                inhom_cathode_offset=self.config.inhom_cathode_offset,
             )
             if self.config.weight_dva > 0
             else 0.0
@@ -1005,17 +1139,16 @@ class DMAAnalyzer:
         fit_ica_mse = (
             fit_ica(
                 param_array,
-                anode,
-                cathode,
-                meas_ica,
-                q,
-                ica_roi_mask,
-                q0,
-                anode_is_blend,
-                cathode_is_blend,
-                self.config.inhom_anode_offset,
-                self.config.inhom_cathode_offset,
-                61,
+                anode=anode,
+                cathode=cathode,
+                meas_ica=meas_ica,
+                q=q,
+                roi_mask=ica_roi_mask,
+                q0=q0,
+                anode_is_blend=anode_is_blend,
+                cathode_is_blend=cathode_is_blend,
+                inhom_anode_offset=self.config.inhom_anode_offset,
+                inhom_cathode_offset=self.config.inhom_cathode_offset,
             )
             if self.config.weight_ica > 0
             else 0.0
@@ -1037,7 +1170,11 @@ class DMAAnalyzer:
         # RMSE in fit region (ROI mask from shared ROI utilities)
         ocv_roi_mask = build_roi_mask(q, self.config.roi_ocv_min, self.config.roi_ocv_max)
         if not np.any(ocv_roi_mask):
-            ocv_roi_mask = np.ones(len(q), dtype=bool)
+            raise ValueError(
+                "OCV ROI selects no point of the SOC grid: "
+                f"roi_ocv_min={self.config.roi_ocv_min!r}, "
+                f"roi_ocv_max={self.config.roi_ocv_max!r}."
+            )
         rmse_fit_region = np.sqrt(calculate_mse(meas_voltage, reconstructed_voltage, ocv_roi_mask))
 
         # RMSE over full range (no mask = all points)
@@ -1048,7 +1185,7 @@ class DMAAnalyzer:
         reconstructed_dva_on_q = np.interp(q, sim_curves["capacity"], sim_curves["dva"])
         rmse_dva = np.sqrt(calculate_mse(display_dva_measured, reconstructed_dva_on_q))
         is_accepted = opt_result.best_is_accepted and (
-            opt_result.best_rmse < self.config.rmse_threshold
+            opt_result.best_rmse < effective_rmse_threshold
         )
         status = "accepted" if is_accepted else "rejected_above_threshold"
 
@@ -1087,17 +1224,19 @@ class DMAAnalyzer:
             anode_potential=sim_curves["anode_voltage"],
             cathode_soc=sim_curves["cathode_soc"],
             cathode_potential=sim_curves["cathode_voltage"],
-            capacity=actual_capacity,
+            capacity=fit_capacity,
             is_accepted=is_accepted,
             status=status,
             algorithm=self.config.algorithm,
+            config_snapshot=asdict(self.config),
+            param_std=opt_result.std_params,
         )
 
         # Store for later access
         self._last_result = result
 
         # Track capacity history and warn if it looks like normalized SOC is being used
-        self._capacity_history.append(actual_capacity)
+        self._capacity_history.append(fit_capacity)
         self._check_normalized_soc_warning()
 
         return result
@@ -1282,7 +1421,8 @@ class DMAAnalyzer:
         dict
             Dictionary with keys:
             - 'soc': SOC values
-            - 'voltage': Full-cell voltage
+            - 'voltage': Full-cell voltage, carrying the resistance offset
+              when the parameters hold a non-zero one
             - 'capacity': Capacity values
             - 'dva': DVA (dV/dQ)
             - 'ica': ICA (dQ/dV)
@@ -1325,14 +1465,21 @@ class DMAAnalyzer:
         )
 
         # MATLAB-matching reconstruction: fixed [0,1] grid with 0-fill outside
-        # electrode range (matches dma_core.m lines 406-410).
-        # Previously used calculate_full_cell_ocv() which normalised the
-        # electrode intersection range to [0,1], misaligning with the
-        # measured [0,1] grid.
+        # electrode range (matches dma_core.m lines 406-410). The grid is the
+        # measured [0,1] grid, so the electrode intersection range must not be
+        # renormalised onto it.
         recon_soc = np.linspace(0.0, 1.0, n_points)
-        anode_v_recon = _interp1_linear_fill0(anode_soc, anode_v, recon_soc)
-        cathode_v_recon = _interp1_linear_fill0(cathode_soc, cathode_v, recon_soc)
+        anode_v_recon = interp_linear_fill0(anode_soc, anode_v, recon_soc)
+        cathode_v_recon = interp_linear_fill0(cathode_soc, cathode_v, recon_soc)
         fc_voltage = cathode_v_recon - anode_v_recon
+
+        # Same conditional term the OCV objective adds, so the curve plotted and
+        # scored here is the one the optimizer minimized against. The derivative
+        # curves below see a constant and are unaffected.
+        r_offset = params.r_offset_ohm or 0.0
+        if r_offset != 0.0:
+            r_offset_sign, pocv_current_abs = self._resistance_offset_terms()
+            fc_voltage = fc_voltage + r_offset_sign * r_offset * pocv_current_abs
 
         # DVA and ICA from reconstructed full-cell
         # (matches MATLAB dma_core.m lines 412-426)
@@ -1458,4 +1605,6 @@ class DMAAnalyzer:
         self._capacity_history = []
         self._normalized_soc_warning_issued = False
         self._reorientation_warning_issued = False
+        self._extrapolation_warned_types = set()
+        self._previous_orientation_corrected = None
         return self

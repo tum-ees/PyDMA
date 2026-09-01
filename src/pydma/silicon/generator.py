@@ -13,9 +13,10 @@ The extraction formula is:
 No GUI is provided - use the programmatic interface instead.
 """
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import scipy.io
@@ -23,31 +24,6 @@ from numpy.typing import NDArray
 
 from pydma.preprocessing.smoother import smooth_lowess
 from pydma.silicon.strict_sto import _collapse_plateaus, _pav_isotonic
-
-
-@dataclass
-class SiliconCurveParams:
-    """Parameters for silicon curve generation.
-
-    Attributes
-    ----------
-    gamma_si : float
-        Silicon fraction in the blend (0 < gamma < 1).
-        For P45B cells, approximately 0.245.
-    filter_input : bool
-        Whether to apply LOWESS smoothing to input data.
-    monotone_filter : bool
-        Whether to enforce monotonicity via isotonic regression (PAV).
-    """
-
-    gamma_si: float
-    filter_input: bool = True
-    monotone_filter: bool = True
-
-    def __post_init__(self) -> None:
-        """Validate parameters."""
-        if not 0 < self.gamma_si < 1:
-            raise ValueError(f"gamma_si must be between 0 and 1, got {self.gamma_si}")
 
 
 @dataclass
@@ -70,6 +46,10 @@ class SiliconCurveResult:
         Blend curve capacity
     gamma_si : float
         Silicon fraction used
+    q_si_raw_min, q_si_raw_max : float
+        Range of the extracted silicon capacity before it is clipped to [0, 1].
+    clipped_fraction : float
+        Fraction of samples the clip moved, in [0, 1].
     """
 
     voltage: NDArray[np.floating]
@@ -79,6 +59,9 @@ class SiliconCurveResult:
     blend_voltage: NDArray[np.floating]
     blend_capacity: NDArray[np.floating]
     gamma_si: float
+    q_si_raw_min: float = 0.0
+    q_si_raw_max: float = 0.0
+    clipped_fraction: float = 0.0
 
     def to_electrode_format(self) -> dict[str, NDArray[np.floating]]:
         """Convert to format suitable for ElectrodeOCP.
@@ -112,8 +95,45 @@ class SiliconCurveResult:
         scipy.io.savemat(str(path), {"siliconStruct": silicon_struct})
 
 
+def _as_curve(struct: Any) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """(voltage, normalizedCapacity) of a MATLAB struct that carries both."""
+    return (
+        np.asarray(struct.voltage, dtype=np.float64).flatten(),
+        np.asarray(struct.normalizedCapacity, dtype=np.float64).flatten(),
+    )
+
+
+def _select_variable(
+    candidates: dict[str, tuple[NDArray[np.floating], NDArray[np.floating]]],
+    path: str | Path,
+    variable_name: str | None,
+    kind: str,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Pick one candidate variable, warning when the choice is not unique."""
+    if variable_name is not None:
+        if variable_name not in candidates:
+            raise ValueError(
+                f"Variable '{variable_name}' does not hold {kind} data in {path}; "
+                f"candidates are {sorted(candidates)}."
+            )
+        return candidates[variable_name]
+
+    if not candidates:
+        raise ValueError(f"Could not find {kind} data in {path}")
+
+    names = list(candidates)
+    if len(names) > 1:
+        warnings.warn(
+            f"{path} holds {len(names)} variables with {kind} data ({names}); reading "
+            f"'{names[0]}'. Pass variable_name to select one explicitly.",
+            stacklevel=3,
+        )
+    return candidates[names[0]]
+
+
 def load_ocp_data(
     path: str | Path,
+    variable_name: str | None = None,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Load OCP data from MAT file.
 
@@ -124,6 +144,10 @@ def load_ocp_data(
     ----------
     path : str or Path
         Path to MAT file
+    variable_name : str, optional
+        Name of the MAT variable to read. Without it the first matching
+        variable is used, and a warning lists the alternatives when the file
+        holds more than one.
 
     Returns
     -------
@@ -132,21 +156,40 @@ def load_ocp_data(
     """
     data = scipy.io.loadmat(str(path), squeeze_me=True, struct_as_record=False)
 
-    # Find the struct (usually first non-private variable)
-    for key, value in data.items():
-        if key.startswith("_"):
-            continue
-        if hasattr(value, "voltage") and hasattr(value, "normalizedCapacity"):
-            return (
-                np.asarray(value.voltage, dtype=np.float64).flatten(),
-                np.asarray(value.normalizedCapacity, dtype=np.float64).flatten(),
-            )
+    candidates = {
+        key: _as_curve(value)
+        for key, value in data.items()
+        if not key.startswith("_")
+        and hasattr(value, "voltage")
+        and hasattr(value, "normalizedCapacity")
+    }
+    return _select_variable(candidates, path, variable_name, "OCP")
 
-    raise ValueError(f"Could not find OCP data in {path}")
+
+def _as_blend_curve(value: Any) -> tuple[NDArray[np.floating], NDArray[np.floating]] | None:
+    """(voltage, normalizedCapacity) of one MAT variable, or None if it holds neither."""
+    # Standard struct format
+    if hasattr(value, "voltage") and hasattr(value, "normalizedCapacity"):
+        return _as_curve(value)
+
+    # Cell array with TestData
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        # Scalar cell array
+        inner = value.item()
+        if hasattr(inner, "TestData"):
+            return _as_curve(inner.TestData)
+    elif isinstance(value, np.ndarray):
+        # Array of structs
+        for item in value.flat:
+            if hasattr(item, "TestData"):
+                return _as_curve(item.TestData)
+
+    return None
 
 
 def load_blend_data(
     path: str | Path,
+    variable_name: str | None = None,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Load blend data from MAT file.
 
@@ -156,6 +199,10 @@ def load_blend_data(
     ----------
     path : str or Path
         Path to MAT file
+    variable_name : str, optional
+        Name of the MAT variable to read. Without it the first matching
+        variable is used, and a warning lists the alternatives when the file
+        holds more than one.
 
     Returns
     -------
@@ -164,39 +211,15 @@ def load_blend_data(
     """
     data = scipy.io.loadmat(str(path), squeeze_me=True, struct_as_record=False)
 
-    # Find the data (try different formats)
+    candidates = {}
     for key, value in data.items():
         if key.startswith("_"):
             continue
+        curve = _as_blend_curve(value)
+        if curve is not None:
+            candidates[key] = curve
 
-        # Standard struct format
-        if hasattr(value, "voltage") and hasattr(value, "normalizedCapacity"):
-            return (
-                np.asarray(value.voltage, dtype=np.float64).flatten(),
-                np.asarray(value.normalizedCapacity, dtype=np.float64).flatten(),
-            )
-
-        # Cell array with TestData
-        if isinstance(value, np.ndarray) and value.ndim == 0:
-            # Scalar cell array
-            inner = value.item()
-            if hasattr(inner, "TestData"):
-                td = inner.TestData
-                return (
-                    np.asarray(td.voltage, dtype=np.float64).flatten(),
-                    np.asarray(td.normalizedCapacity, dtype=np.float64).flatten(),
-                )
-        elif isinstance(value, np.ndarray):
-            # Array of structs
-            for item in value.flat:
-                if hasattr(item, "TestData"):
-                    td = item.TestData
-                    return (
-                        np.asarray(td.voltage, dtype=np.float64).flatten(),
-                        np.asarray(td.normalizedCapacity, dtype=np.float64).flatten(),
-                    )
-
-    raise ValueError(f"Could not find blend data in {path}")
+    return _select_variable(candidates, path, variable_name, "blend")
 
 
 def _smooth_unique(
@@ -258,14 +281,29 @@ def _trim_and_renorm(
     -------
     tuple[NDArray, NDArray]
         (voltage, capacity) trimmed and renormalized
+
+    Raises
+    ------
+    ValueError
+        If the trimmed window carries a constant capacity. There is no
+        normalisation for it, and passing the raw values on would leave a curve
+        that silently is not on the [0, 1] scale the extraction assumes.
     """
     mask = (voltage >= v_min) & (voltage <= v_max)
     voltage = voltage[mask]
     capacity = capacity[mask]
 
+    q_min = float(capacity.min()) if capacity.size else float("nan")
+    q_max = float(capacity.max()) if capacity.size else float("nan")
+    if not capacity.size or q_max <= q_min:
+        raise ValueError(
+            f"Capacity is constant at q = {q_min!r} inside the voltage window "
+            f"[{v_min:.6g}, {v_max:.6g}] V ({capacity.size} sample(s)); there is no "
+            "range to renormalise onto [0, 1]."
+        )
+
     # Renormalize to [0, 1]
-    if capacity.max() > capacity.min():
-        capacity = (capacity - capacity.min()) / (capacity.max() - capacity.min())
+    capacity = (capacity - q_min) / (q_max - q_min)
 
     return voltage, capacity
 
@@ -351,8 +389,6 @@ def generate_si_curve(
         raise ValueError(f"gamma_si must be between 0 and 1, got {gamma_si}")
 
     if filter_input is not None:
-        import warnings
-
         warnings.warn(
             "filter_input is deprecated; use filter_blend and filter_graphite instead.",
             DeprecationWarning,
@@ -413,29 +449,63 @@ def generate_si_curve(
     q_gr = np.interp(v_common, gr_v, gr_q)
     q_blend = np.interp(v_common, blend_v, blend_q)
 
-    # Remove flat regions at start
+    # Drop the first grid point. It sits exactly on the lower window boundary,
+    # where at least one of the two curves is pinned to its own edge sample.
     mask_first = np.zeros(len(v_common), dtype=bool)
     mask_first[0] = True
-    mask_flat = (q_gr == q_gr.min()) & (q_gr == q_gr.max())
-    mask_keep = ~(mask_first | mask_flat)
+    mask_keep = ~mask_first
 
     v_common = v_common[mask_keep]
     q_gr = q_gr[mask_keep]
     q_blend = q_blend[mask_keep]
 
+    # The subtraction below assumes both curves run their capacity in the same
+    # direction over voltage. Mixing a lithiation reference with a delithiation
+    # blend (or vice versa) still yields a smooth-looking silicon curve, so the
+    # mismatch has to be caught here rather than left to the reader.
+    slope_gr = float(np.polyfit(v_common, q_gr, 1)[0])
+    slope_blend = float(np.polyfit(v_common, q_blend, 1)[0])
+    if np.sign(slope_gr) != np.sign(slope_blend):
+        raise ValueError(
+            f"Graphite and blend run their capacity in opposite directions over "
+            f"voltage: dQ_gr/dV = {slope_gr:.6g}, dQ_blend/dV = {slope_blend:.6g}. "
+            "Both curves must be the same lithiation direction."
+        )
+
     # Calculate silicon curve
     # Q_Si = (Q_blend - (1-γ)·Q_Gr) / γ
     q_si = (q_blend - (1 - gamma_si) * q_gr) / gamma_si
+
+    # The clip below is silent, so record what it hides: how far the raw
+    # extraction left [0, 1] and how much of the curve it moves. Both are
+    # symptoms of a gamma_si that does not match the two input curves.
+    q_si_raw_min = float(q_si.min())
+    q_si_raw_max = float(q_si.max())
+    clipped_fraction = float(np.mean((q_si < 0.0) | (q_si > 1.0)))
+    excess = max(q_si_raw_max - 1.0, -q_si_raw_min, 0.0)
+    if clipped_fraction > 0.01 and excess > 0.02:
+        warnings.warn(
+            f"Silicon extraction at gamma_si={gamma_si} leaves [0, 1] before clipping: "
+            f"raw range [{q_si_raw_min:.4f}, {q_si_raw_max:.4f}], "
+            f"{clipped_fraction:.1%} of the samples clipped. Check gamma_si and the "
+            "graphite reference.",
+            stacklevel=2,
+        )
+
+    # sum(diff(.)) telescopes to q_si[-1] - q_si[0], so this IS the endpoint
+    # comparison — taken on the pre-clip array, where a clipped endpoint cannot
+    # flip it.
+    rises_with_voltage = float(np.sum(np.diff(q_si))) >= 0.0
 
     # Clip to [0, 1]
     q_si = np.clip(q_si, 0, 1)
 
     # Enforce monotonicity via isotonic regression (PAV)
     if monotone_filter:
-        if q_si[-1] < q_si[0]:
-            q_si = _pav_isotonic(q_si, "nonincreasing")
-        else:
+        if rises_with_voltage:
             q_si = _pav_isotonic(q_si, "nondecreasing")
+        else:
+            q_si = _pav_isotonic(q_si, "nonincreasing")
         # Plateau-collapse is opt-in. Removing PAV plateau interiors makes the
         # curve a strict function of SOC (needed for downstream SOC->V
         # consumers) but under-resolves the low-V silicon plateau and breaks
@@ -449,14 +519,19 @@ def generate_si_curve(
             q_gr = np.interp(v_common, gr_v, gr_q)
             q_blend = np.interp(v_common, blend_v, blend_q)
 
+    # Each voltage field gets its own copy: the three share one grid, and a
+    # consumer editing one of them in place must not reach the other two.
     return SiliconCurveResult(
-        voltage=v_common,
+        voltage=v_common.copy(),
         normalized_capacity=q_si,
-        graphite_voltage=v_common,
+        graphite_voltage=v_common.copy(),
         graphite_capacity=q_gr,
-        blend_voltage=v_common,
+        blend_voltage=v_common.copy(),
         blend_capacity=q_blend,
         gamma_si=gamma_si,
+        q_si_raw_min=q_si_raw_min,
+        q_si_raw_max=q_si_raw_max,
+        clipped_fraction=clipped_fraction,
     )
 
 

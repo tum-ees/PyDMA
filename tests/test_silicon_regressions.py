@@ -16,16 +16,20 @@ with the conceptual pre-trim window
 so the linspace covers the full conceptual support intersection
 [v_min, v_max] rather than an inset range whose endpoints depend on input
 sampling.
+
+The last group covers the three guards around the extraction: the two input
+curves have to run their capacity in the same direction, a silicon curve that
+leaves [0, 1] before the clip has to say so, and a MAT file holding several
+candidate variables has to name them instead of silently reading the first.
 """
 
-import sys
-from pathlib import Path
+import warnings
 
 import numpy as np
+import pytest
+import scipy.io
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from pydma.silicon.generator import generate_si_curve
+from pydma.silicon.generator import generate_si_curve, load_blend_data, load_ocp_data
 
 
 def _trimmed_len(v, vmin, vmax):
@@ -215,3 +219,97 @@ def test_linspace_step_is_pretrim_window_width_over_n_minus_1():
     assert (
         abs(old_step - expected_step) > 1e-9
     ), f"degenerate input: old/new step coincide ({old_step} vs {expected_step})"
+
+
+# ---------------------------------------------------------------------------
+# Guards around the extraction
+# ---------------------------------------------------------------------------
+
+_GUARD_V = np.linspace(0.05, 0.50, 401)
+
+
+def test_opposite_capacity_directions_are_rejected():
+    """A lithiation graphite reference against a delithiation blend still
+    subtracts to a smooth-looking silicon curve, so the mismatch has to be
+    caught. The same graphite against a same-direction blend goes through.
+    """
+    rising = np.linspace(0.0, 1.0, _GUARD_V.size)
+
+    with pytest.raises(ValueError, match="opposite directions over"):
+        generate_si_curve(
+            graphite_data=(_GUARD_V, rising),
+            blend_data=(_GUARD_V, rising[::-1]),
+            gamma_si=0.25,
+            filter_blend=False,
+            filter_graphite=False,
+            monotone_filter=False,
+        )
+
+    result = generate_si_curve(
+        graphite_data=(_GUARD_V, rising),
+        blend_data=(_GUARD_V, rising),
+        gamma_si=0.25,
+        filter_blend=False,
+        filter_graphite=False,
+        monotone_filter=False,
+    )
+    assert result.voltage.size > 0
+
+
+def test_a_silicon_extraction_that_leaves_the_unit_interval_is_reported():
+    """The clip to [0, 1] is silent, so a gamma_si that does not match the two
+    curves has to surface as a warning. Both thresholds have to be crossed:
+    a share of the samples AND a margin beyond the interval.
+    """
+    rising = np.linspace(0.0, 1.0, _GUARD_V.size)
+
+    with pytest.warns(UserWarning, match=r"leaves \[0, 1\] before clipping"):
+        result = generate_si_curve(
+            graphite_data=(_GUARD_V, rising),
+            blend_data=(_GUARD_V, np.sqrt(rising)),
+            gamma_si=0.10,
+            filter_blend=False,
+            filter_graphite=False,
+            monotone_filter=False,
+        )
+
+    assert result.clipped_fraction > 0.01
+    assert result.q_si_raw_max > 1.02
+    assert float(result.normalized_capacity.max()) <= 1.0
+
+
+def _write_two_curve_mat(path, keys):
+    """A MAT file carrying one voltage/normalizedCapacity struct per key."""
+    voltage = np.linspace(0.05, 0.50, 32)
+    scipy.io.savemat(
+        str(path),
+        {
+            key: {
+                "voltage": voltage,
+                "normalizedCapacity": np.linspace(0.0, 1.0, voltage.size) + offset,
+            }
+            for offset, key in enumerate(keys)
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "loader, kind",
+    [(load_ocp_data, "OCP"), (load_blend_data, "blend")],
+    ids=["ocp", "blend"],
+)
+def test_a_mat_file_with_several_candidate_variables_names_them(tmp_path, loader, kind):
+    """Without ``variable_name`` the first candidate is read. Which one that is
+    depends on the file's key order, so the alternatives are listed rather than
+    passed over in silence. Naming one silences the warning.
+    """
+    path = tmp_path / f"two_{kind}.mat"
+    _write_two_curve_mat(path, ("curveA", "curveB"))
+
+    with pytest.warns(UserWarning, match=f"holds 2 variables with {kind} data"):
+        loader(path)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _, capacity = loader(path, variable_name="curveB")
+    assert float(capacity.min()) == pytest.approx(1.0)

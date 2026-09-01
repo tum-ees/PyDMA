@@ -1,14 +1,12 @@
 import itertools
-import sys
 import tempfile
 import warnings
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 from scipy.io import savemat
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pydma.core.analyzer import DMAAnalyzer
 from pydma.core.optimizer import MultiRunResult, OptimizationRun
@@ -51,6 +49,30 @@ def test_load_pocv_returns_none_for_normalized_soc_without_capacity_column():
     assert capacity is None
 
 
+@pytest.mark.parametrize(
+    "axis, expect_warning",
+    [
+        (np.linspace(0.0, 100.0, 41), True),
+        (np.linspace(0.0, 280.0, 41), False),
+        (np.linspace(0.0, 100.0, 41) + 150.0, False),
+    ],
+    ids=["percent-axis", "280Ah-cell", "offset-100-span"],
+)
+def test_a_percent_axis_is_named_and_a_large_format_cell_is_not(axis, expect_warning):
+    """The signature of a percent axis is a span of about 100 starting at 0.
+    A 280 Ah cell has a far larger span, and a 100-wide window that starts at
+    150 Ah is a capacity segment, not a percentage -- neither may be flagged.
+    """
+    from pydma.preprocessing.loader import _extract_capacity_value
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _extract_capacity_value(axis)
+
+    hits = [w for w in caught if "percent axis" in str(w.message)]
+    assert bool(hits) is expect_warning
+
+
 def test_load_ocp_handles_nested_mat_struct():
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "electrode.mat"
@@ -88,6 +110,23 @@ def test_load_aging_study_selects_requested_direction():
 
     assert charge_data["CU1"][1][0] == 3.0
     assert discharge_data["CU1"][1][0] == 4.0
+
+
+def test_discharge_selection_reads_the_ch_marker_only_where_it_means_charge(tmp_path):
+    """'pocv_discharge_checkup' carries '_ch' inside '_checkup' and does not
+    carry 'dch' anywhere -- 'discharge' spells out d-i-s-c-h. The charge-only
+    marker must not be read on a stem that already says discharge.
+    """
+    cu_dir = tmp_path / "CU1"
+    cu_dir.mkdir()
+    (cu_dir / "pocv_discharge_checkup.csv").write_text(
+        "Ah_Step,U,pOCV_DCH\n0.0,4.0,4.1\n1.0,3.6,4.1\n2.0,3.2,4.1\n",
+        encoding="utf-8",
+    )
+
+    data = load_aging_study(tmp_path, direction="discharge")
+
+    assert data["CU1"][1][0] == 4.0
 
 
 def test_load_aging_study_reads_single_mat_file():
@@ -145,17 +184,52 @@ def test_load_aging_study_reads_table_like_single_mat_file():
     assert data["CU2"][2] == 4.8
 
 
+def test_load_aging_study_reports_a_gap_in_the_cu_numbering(tmp_path):
+    """CU1, CU2 and CU4 are present; CU3 is not.
+
+    The loader collects every CU that exists instead of stopping at the first
+    missing index, so all three are returned -- but a check-up that was meant
+    to be there and is not would then be indistinguishable from one that never
+    existed, which is what the warning is for.
+    """
+    for index in (1, 2, 4):
+        (tmp_path / f"CU{index}.csv").write_text(
+            "Ah_Step,U,pOCV_CH\n0.0,3.0,4.2\n1.0,3.5,4.2\n2.0,4.0,4.2\n",
+            encoding="utf-8",
+        )
+
+    with pytest.warns(UserWarning, match=r"missing CU indices \[3\]"):
+        data = load_aging_study(tmp_path, direction="charge")
+
+    assert list(data) == ["CU1", "CU2", "CU4"]
+    for cu_name in data:
+        np.testing.assert_allclose(data[cu_name][1], np.array([3.0, 3.5, 4.0]))
+
+
+def test_load_aging_study_stays_quiet_for_a_contiguous_cu_range(tmp_path):
+    """The negative control: CU1 and CU2 with nothing missing must not warn,
+    or the gap warning above carries no information."""
+    for index in (1, 2):
+        (tmp_path / f"CU{index}.csv").write_text(
+            "Ah_Step,U,pOCV_CH\n0.0,3.0,4.2\n1.0,3.5,4.2\n2.0,4.0,4.2\n",
+            encoding="utf-8",
+        )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        data = load_aging_study(tmp_path, direction="charge")
+
+    assert list(data) == ["CU1", "CU2"]
+    assert [str(w.message) for w in caught if "missing CU indices" in str(w.message)] == []
+
+
 def test_analyze_aging_study_requires_actual_capacity_when_loader_returns_none():
     analyzer = DMAAnalyzer()
 
-    try:
+    with pytest.raises(ValueError, match="actual capacity value"):
         analyzer.analyze_aging_study(
             {"CU1": (np.array([0.0, 0.5, 1.0]), np.array([3.0, 3.5, 4.0]), None)}
         )
-    except ValueError as exc:
-        assert "actual capacity value" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError when actual capacity is missing.")
 
 
 def test_analyze_aging_study_passes_actual_capacity_to_analyze():
@@ -216,12 +290,8 @@ def test_analyze_aging_study_rejects_normalized_two_tuple_study():
         "CU2": (np.array([0.0, 0.5, 1.0]), np.array([3.1, 3.6, 4.1])),
     }
 
-    try:
+    with pytest.raises(ValueError, match=r"normalized 0\.\.1 capacity axes"):
         analyzer.analyze_aging_study(pocv_data)
-    except ValueError as exc:
-        assert "normalized 0..1 capacity axes" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError for ambiguous normalized 2-tuple study.")
 
 
 def test_analyze_aging_study_warns_for_two_tuple_input():
@@ -384,7 +454,6 @@ def test_reorientation_warning_is_once_until_reset():
 
 
 def test_load_aging_study_is_exported_top_level():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     import pydma
 
     assert callable(pydma.load_aging_study)

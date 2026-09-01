@@ -6,20 +6,26 @@ on the OCV curve using a Gaussian distribution of local SOCs.
 
 The inhomogeneity model represents non-uniform SOC distribution across
 the electrode, which causes voltage averaging effects.
-"""
 
-from functools import lru_cache
+Averaging voltages over a spread of local SOCs is an empirical broadening
+model, not an equilibrium mixture: a real electrode at rest equilibrates its
+potential rather than reporting the mean of its local potentials. It widens
+features in the same direction a larger blend fraction does, so a fitted sigma
+can correlate with gamma.
+"""
 
 import numpy as np
 
 # Fixed parameters for inhomogeneity model
 # DIFFERENCE FROM MATLAB: These values are fixed as specified in requirements
+# The 61 points are a deliberate model constant, not a resolution knob: they fix
+# the discretisation of the SOC-multiplier grid the fitted sigma is defined
+# against, so changing them changes the meaning of every fitted sigma.
 _INHOM_N_POINTS = 61
 _INHOM_X_MIN = 0.5
 _INHOM_X_MAX = 1.5
 
 
-@lru_cache(maxsize=32)
 def _get_inhomogeneity_weights(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     """
     Calculate Gaussian weights for inhomogeneity model.
@@ -31,18 +37,17 @@ def _get_inhomogeneity_weights(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     ----------
     sigma : float
         Standard deviation of the Gaussian (inhomogeneity magnitude).
+        Must be positive.
 
     Returns
     -------
     tuple
         (x, weights) where x is the SOC multiplier grid and weights
         are the normalized Gaussian weights.
-
-    Notes
-    -----
-    DIFFERENCE FROM MATLAB: Same algorithm, using lru_cache for performance.
-    The MATLAB code uses persistent variables for caching.
     """
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma!r}.")
+
     x = np.linspace(_INHOM_X_MIN, _INHOM_X_MAX, _INHOM_N_POINTS)
     mu = 1.0
 
@@ -98,9 +103,16 @@ def calculate_inhomogeneity(
     DIFFERENCE FROM MATLAB: Same mathematical model. The MATLAB code uses
     griddedInterpolant; we use numpy.interp for simplicity and compatibility.
 
-    With ``inhom_offset_fraction = 0`` the inhomogeneity is zero at 0% full
-    cell SOC and maximum at 100% SOC. Positive offsets allow a finite
-    fraction of the maximum spread already at SOC = 0.
+    With ``inhom_offset_fraction = 0`` the inhomogeneity is zero at zero
+    electrode stoichiometry and maximum at full stoichiometry. Positive offsets
+    allow a finite fraction of the maximum spread already at ``soc = 0``. The
+    broadening acts on the electrode's own stoichiometry axis, i.e. before the
+    fitted ``alpha`` / ``beta`` map that axis onto the full-cell charge axis.
+
+    The local-SOC grid holds 61 points across a multiplier range of 1.0, so
+    spreads below roughly ``1/60`` fall between grid points: every weight but
+    the central one is then numerically negligible and the model has a dead
+    zone in which sigma has no visible effect.
 
     Examples
     --------
@@ -146,50 +158,6 @@ def calculate_inhomogeneity(
     return voltage_mean
 
 
-def calculate_inhomogeneity_for_electrode(
-    electrode,
-    inhom_sigma: float,
-    inhom_offset_fraction: float = 0.0,
-):
-    """
-    Apply inhomogeneity to an ElectrodeOCP object.
-
-    Parameters
-    ----------
-    electrode : ElectrodeOCP
-        Electrode OCP object.
-    inhom_sigma : float
-        Inhomogeneity magnitude.
-    inhom_offset_fraction : float, optional
-        Fraction of the maximum spread already present at SOC = 0.
-
-    Returns
-    -------
-    ElectrodeOCP
-        New electrode with inhomogeneity applied.
-    """
-    from pydma.electrodes.electrode import ElectrodeOCP
-
-    if inhom_sigma <= 0:
-        return electrode.copy()
-
-    voltage_inhom = calculate_inhomogeneity(
-        electrode.soc,
-        electrode.voltage,
-        inhom_sigma,
-        inhom_offset_fraction=inhom_offset_fraction,
-    )
-
-    return ElectrodeOCP(
-        soc=electrode.soc.copy(),
-        voltage=voltage_inhom,
-        name=f"{electrode.name} (σ={inhom_sigma:.3f})",
-        electrode_type=electrode.electrode_type,
-        capacity=electrode.capacity,
-        is_smoothed=electrode.is_smoothed,
-    )
-
-
 def get_inhomogeneity_distribution(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     """
     Get the SOC distribution used in inhomogeneity model.
@@ -199,7 +167,7 @@ def get_inhomogeneity_distribution(sigma: float) -> tuple[np.ndarray, np.ndarray
     Parameters
     ----------
     sigma : float
-        Inhomogeneity magnitude.
+        Inhomogeneity magnitude. Must be positive.
 
     Returns
     -------

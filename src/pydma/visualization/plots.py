@@ -16,10 +16,10 @@ Conventions used in this module:
   notebook and script users get consistent publication-style output.
 """
 
-import re
+import contextlib
 import warnings
-from collections.abc import MutableMapping, Sequence
-from typing import Any, cast
+from collections.abc import Sequence
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -47,8 +47,13 @@ TUM_COLORS = {
 }
 
 
-def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> None:
-    """Set up matplotlib style for DMA plots.
+def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> dict[str, Any]:
+    """Build the rcParams overrides used for DMA plots.
+
+    Returns the style dict rather than mutating ``plt.rcParams`` directly;
+    callers apply it with ``plt.rc_context(style)`` around figure creation
+    and drawing so the global rcParams state is unchanged once the call
+    returns.
 
     Parameters
     ----------
@@ -58,6 +63,11 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> None:
     use_tex : bool, optional
         If True, enable full LaTeX rendering via ``text.usetex``.
         Requires a working TeX installation in the runtime environment.
+
+    Returns
+    -------
+    dict
+        rcParams overrides for use as a ``plt.rc_context`` argument.
     """
     style: dict[str, Any] = {
         "font.size": 10,
@@ -87,8 +97,7 @@ def _setup_style(latex_fonts: bool = False, use_tex: bool = False) -> None:
             }
         )
     style["text.usetex"] = bool(use_tex)
-    rc_params = cast(MutableMapping[str, Any], plt.rcParams)
-    rc_params.update(style)
+    return style
 
 
 def _first_nonempty_array(
@@ -121,14 +130,51 @@ def _concat_finite_arrays(
     return np.concatenate(finite_parts)
 
 
-def _detect_cu_index(cu_name: str) -> int | None:
-    """Extract CU index from names like 'CU1', 'entry03', etc."""
-    if not cu_name:
-        return None
-    match = re.search(r"(\d+)", cu_name)
-    if match is None:
-        return None
-    return int(match.group(1))
+def _peak_between(
+    x_lo: float,
+    x_hi: float,
+    *curves: tuple[NDArray[np.floating] | None, NDArray[np.floating] | None],
+) -> float | None:
+    """Highest y over ``x_lo <= x <= x_hi``, or None if no sample lands there.
+
+    Both ends of a DVA diverge, so an axis scaled to the global peak flattens
+    the staging features in between. This reports the peak of the interior, and
+    the callers cap the axis at it.
+    """
+    peaks: list[float] = []
+    for x, y in curves:
+        if x is None or y is None:
+            continue
+        x_arr = np.asarray(x, dtype=np.float64).flatten()
+        y_arr = np.asarray(y, dtype=np.float64).flatten()
+        n = min(x_arr.size, y_arr.size)
+        if n == 0:
+            continue
+        x_arr, y_arr = x_arr[:n], y_arr[:n]
+        mask = np.isfinite(x_arr) & np.isfinite(y_arr) & (x_arr >= x_lo) & (x_arr <= x_hi)
+        if np.any(mask):
+            peaks.append(float(np.max(y_arr[mask])))
+    return max(peaks) if peaks else None
+
+
+# Upper y-limit the DVA panels start from before the interior peak is consulted.
+_DVA_YMAX_DEFAULT = 2.5
+
+
+def _is_normalized_capacity(values: NDArray[np.floating]) -> bool:
+    """True if every finite value in ``values`` lies within [0, 1].
+
+    This is a range heuristic, not a units check: a raw capacity in Ah from
+    a cell below 1 Ah also passes it, so it misreads as SOC unless the
+    caller pins the axis kind explicitly (see ``x_is_soc`` on the public
+    OCV/DVA comparison plots).
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == 0:
+        return False
+    vmin = np.nanmin(values)
+    vmax = np.nanmax(values)
+    return bool((vmin >= -1e-6) and (vmax <= 1.0 + 1e-6))
 
 
 def plot_ocv_model_param_show(
@@ -139,7 +185,7 @@ def plot_ocv_model_param_show(
     cu_index: int | None = None,
     label_cfg: dict[str, str] | None = None,
     figsize_cm: tuple[float, float] = (20.0, 16.0),
-    y_max_dva: float = 2.5,
+    y_max_dva: float = _DVA_YMAX_DEFAULT,
     legend_ncols: int = 2,
     latex_fonts: bool = False,
     use_tex: bool = False,
@@ -183,7 +229,9 @@ def plot_ocv_model_param_show(
     Returns
     -------
     Figure
-        Matplotlib figure object.
+        Matplotlib figure object. Close it with ``plt.close(fig)`` once
+        done with it; a loop over many CUs otherwise accumulates figures
+        in the pyplot registry.
 
     Raises
     ------
@@ -191,7 +239,7 @@ def plot_ocv_model_param_show(
         If measured/reconstructed OCV/DVA or electrode reconstruction data
         required for the MATLAB-style overlay is missing.
     """
-    _setup_style(latex_fonts=latex_fonts, use_tex=use_tex)
+    style = _setup_style(latex_fonts=latex_fonts, use_tex=use_tex)
     if legend_ncols < 1:
         raise ValueError(f"legend_ncols must be >= 1, got {legend_ncols}")
 
@@ -390,259 +438,244 @@ def plot_ocv_model_param_show(
 
     # check measured/reconstructed full-cell curves in the 10-90% SOC window.
     # If the data peak there exceeds the configured y-limit max, expand by 5%.
-    fullcell_roi_min = 0.10
-    fullcell_roi_max = 0.90
-    roi_peaks: list[float] = []
-    for q_arr, d_arr in (
+    max_roi_peak = _peak_between(
+        0.10,
+        0.90,
         (measured_q_dva, measured_dva),
         (reconstructed_q_dva, reconstructed_dva),
-    ):
-        n = min(q_arr.size, d_arr.size)
-        if n == 0:
-            continue
-        q_roi = q_arr[:n]
-        d_roi = d_arr[:n]
-        mask_roi = (
-            np.isfinite(q_roi)
-            & np.isfinite(d_roi)
-            & (q_roi >= fullcell_roi_min)
-            & (q_roi <= fullcell_roi_max)
-        )
-        if np.any(mask_roi):
-            roi_peaks.append(float(np.max(d_roi[mask_roi])))
-    if roi_peaks:
-        max_roi_peak = max(roi_peaks)
-        if max_roi_peak > y_lim_dva_max:
-            y_lim_dva_max = 1.05 * max_roi_peak
+    )
+    if max_roi_peak is not None and max_roi_peak > y_lim_dva_max:
+        y_lim_dva_max = 1.05 * max_roi_peak
 
     y_lim_dva = (y_lim_dva_min, y_lim_dva_max)
 
     fig_w_cm, fig_h_cm = figsize_cm
     compact_height = fig_h_cm <= 12.0
-    fig = plt.figure(
-        figsize=(fig_w_cm / 2.54, fig_h_cm / 2.54),
-        facecolor="white",
-    )
-    gs = fig.add_gridspec(nrows=3, ncols=1, hspace=0.06)
-    ax1 = fig.add_subplot(gs[:2, 0])
-    ax2 = fig.add_subplot(gs[2, 0], sharex=ax1)
+    with plt.rc_context(style):
+        fig = plt.figure(
+            figsize=(fig_w_cm / 2.54, fig_h_cm / 2.54),
+            facecolor="white",
+        )
+        gs = fig.add_gridspec(nrows=3, ncols=1, hspace=0.06)
+        ax1 = fig.add_subplot(gs[:2, 0])
+        ax2 = fig.add_subplot(gs[2, 0], sharex=ax1)
 
-    # Title intentionally omitted to keep the plot area clean and maximize
-    # consistency across CUs in overview workflows.
-    _ = cell_name
-    _ = cu_index
-    _ = title_font
-    # Compromise spacing: closer than original, but not as tight as the last revision.
-    legend_y = 0.05 if compact_height else 0.045
-    axes_top = 0.96
+        # Title intentionally omitted to keep the plot area clean and maximize
+        # consistency across CUs in overview workflows.
+        _ = cell_name
+        _ = cu_index
+        _ = title_font
+        # Compromise spacing: closer than original, but not as tight as the last revision.
+        legend_y = 0.05 if compact_height else 0.045
+        axes_top = 0.96
 
-    # OCV panel (2x height)
-    (h_meas,) = ax1.plot(
-        measured_q,
-        measured_u,
-        color=col_meas,
-        linewidth=lw_main,
-        linestyle="-",
-        label="FC measured",
-    )
-    (h_recon,) = ax1.plot(
-        reconstructed_q,
-        reconstructed_u,
-        color=col_model,
-        linewidth=lw_main,
-        linestyle="-.",
-        label="FC reconstructed",
-    )
-    (h_cath,) = ax1.plot(
-        cathode_soc,
-        cathode_u,
-        color=col_cathode,
-        linewidth=lw_main,
-        linestyle="-.",
-        label=f"{labels['label_cathode']} reconstructed",
-    )
-    (h_an,) = ax1.plot(
-        anode_soc,
-        anode_u,
-        color=col_anode,
-        linewidth=lw_main,
-        linestyle="-.",
-        label=f"{labels['label_anode']} reconstructed",
-    )
-
-    ax1.set_xlim(*x_lim_dyn)
-    ax1.set_ylim(*y_lim_ocv)
-    ax1.set_yticks(np.arange(0.0, 5.0, 1.0))
-    ax1.set_ylabel(r"$U$ / $\mathrm{V}$", fontsize=base_font)
-    ax1.tick_params(axis="both", labelsize=axis_tick_font)
-    ax1.tick_params(labelbottom=False)
-    ax1.grid(True, alpha=0.3)
-    for spine in ax1.spines.values():
-        spine.set_linewidth(axes_box_line_width)
-
-    x_left, x_right = ax1.get_xlim()
-    if x_left <= 0.0 <= x_right:
-        ax1.plot([0.0, 0.0], [y_lim_ocv[0], y_lim_ocv[1]], "--k", linewidth=lw_guide)
-    if x_left <= 1.0 <= x_right:
-        ax1.plot([1.0, 1.0], [y_lim_ocv[0], y_lim_ocv[1]], "--k", linewidth=lw_guide)
-
-    fig.legend(
-        handles=[h_meas, h_recon, h_cath, h_an],
-        loc="lower center",
-        bbox_to_anchor=(0.5, legend_y),
-        ncol=legend_ncols,
-        fontsize=legend_font,
-        frameon=True,
-        fancybox=False,
-        edgecolor="black",
-    )
-
-    def draw_double_arrow(
-        ax: Axes,
-        x_start: float,
-        x_end: float,
-        y_level: float,
-        color: NDArray[np.floating],
-    ) -> None:
-        ax.annotate(
-            "",
-            xy=(x_end, y_level),
-            xytext=(x_start, y_level),
-            arrowprops={
-                "arrowstyle": "<->",
-                "color": color,
-                "linewidth": arrow_line_width,
-                "shrinkA": 0.0,
-                "shrinkB": 0.0,
-                "mutation_scale": 12.0,
-            },
+        # OCV panel (2x height)
+        (h_meas,) = ax1.plot(
+            measured_q,
+            measured_u,
+            color=col_meas,
+            linewidth=lw_main,
+            linestyle="-",
+            label="FC measured",
+        )
+        (h_recon,) = ax1.plot(
+            reconstructed_q,
+            reconstructed_u,
+            color=col_model,
+            linewidth=lw_main,
+            linestyle="-.",
+            label="FC reconstructed",
+        )
+        (h_cath,) = ax1.plot(
+            cathode_soc,
+            cathode_u,
+            color=col_cathode,
+            linewidth=lw_main,
+            linestyle="-.",
+            label=f"{labels['label_cathode']} reconstructed",
+        )
+        (h_an,) = ax1.plot(
+            anode_soc,
+            anode_u,
+            color=col_anode,
+            linewidth=lw_main,
+            linestyle="-.",
+            label=f"{labels['label_anode']} reconstructed",
         )
 
-    draw_double_arrow(
-        ax1,
-        float(np.min(cathode_soc)),
-        float(np.max(cathode_soc)),
-        float(np.max(cathode_u) + alpha_cat_arrow_y_offset),
-        col_cathode,
-    )
-    ax1.text(
-        float(0.5 * (np.min(cathode_soc) + np.max(cathode_soc))),
-        float(np.max(cathode_u) - alpha_cat_text_down),
-        rf"$\alpha_{{\mathrm{{cat}}}} = {alpha_ca:.2f}$",
-        color=col_cathode,
-        fontsize=base_font,
-        ha="center",
-        va="center",
-    )
+        ax1.set_xlim(*x_lim_dyn)
+        ax1.set_ylim(*y_lim_ocv)
+        ax1.set_yticks(np.arange(0.0, 5.0, 1.0))
+        ax1.set_ylabel(r"$U$ / $\mathrm{V}$", fontsize=base_font)
+        ax1.tick_params(axis="both", labelsize=axis_tick_font)
+        ax1.tick_params(labelbottom=False)
+        ax1.grid(True, alpha=0.3)
+        for spine in ax1.spines.values():
+            spine.set_linewidth(axes_box_line_width)
 
-    draw_double_arrow(
-        ax1,
-        float(np.min(anode_soc)),
-        float(np.max(anode_soc)),
-        float(np.max(anode_u) + alpha_an_arrow_y_offset),
-        col_anode,
-    )
-    ax1.text(
-        float(0.5 * (np.min(anode_soc) + np.max(anode_soc))),
-        float(np.max(anode_u) + alpha_an_text_up),
-        rf"$\alpha_{{\mathrm{{an}}}} = {alpha_an:.2f}$",
-        color=col_anode,
-        fontsize=base_font,
-        ha="center",
-        va="center",
-    )
+        x_left, x_right = ax1.get_xlim()
+        if x_left <= 0.0 <= x_right:
+            ax1.plot([0.0, 0.0], [y_lim_ocv[0], y_lim_ocv[1]], "--k", linewidth=lw_guide)
+        if x_left <= 1.0 <= x_right:
+            ax1.plot([1.0, 1.0], [y_lim_ocv[0], y_lim_ocv[1]], "--k", linewidth=lw_guide)
 
-    draw_double_arrow(
-        ax1,
-        # Keep cathode beta arrow visible even when cathode SOC extends below 0.
-        # Using min(0, ...) avoids collapsing the arrow to zero length.
-        float(min(0.0, np.min(cathode_soc) - beta_cat_x_shift_to_zero)),
-        0.0,
-        float(np.min(cathode_u) + beta_cat_arrow_y_offset),
-        col_cathode,
-    )
-    draw_double_arrow(
-        ax1,
-        float(np.min(anode_soc)),
-        0.0,
-        float(np.min(anode_u) + beta_an_arrow_y_offset),
-        col_anode,
-    )
-    beta_text_x = (
-        0.03
-        if x_lim_dyn[0] <= 0.03 <= x_lim_dyn[1]
-        else x_lim_dyn[0] + 0.03 * (x_lim_dyn[1] - x_lim_dyn[0])
-    )
-    ax1.text(
-        beta_text_x,
-        float(np.min(cathode_u) + beta_cat_text_up),
-        rf"$\beta_{{\mathrm{{cat}}}} = {beta_ca:.2f}$",
-        color=col_cathode,
-        fontsize=base_font,
-        ha="left",
-        va="center",
-    )
-    ax1.text(
-        beta_text_x,
-        float(np.min(anode_u) + beta_an_text_up),
-        rf"$\beta_{{\mathrm{{an}}}} = {beta_an:.2f}$",
-        color=col_anode,
-        fontsize=base_font,
-        ha="left",
-        va="center",
-    )
+        fig.legend(
+            handles=[h_meas, h_recon, h_cath, h_an],
+            loc="lower center",
+            bbox_to_anchor=(0.5, legend_y),
+            ncol=legend_ncols,
+            fontsize=legend_font,
+            frameon=True,
+            fancybox=False,
+            edgecolor="black",
+        )
 
-    # DVA panel (1x height)
-    ax2.plot(
-        measured_q_dva,
-        measured_dva,
-        color=col_meas,
-        linewidth=lw_dva,
-        linestyle="-",
-    )
-    ax2.plot(
-        reconstructed_q_dva,
-        reconstructed_dva,
-        color=col_model,
-        linewidth=lw_dva,
-        linestyle="-.",
-    )
-    ax2.plot(
-        q_dva_cath,
-        dva_cath,
-        color=col_cathode,
-        linewidth=lw_dva,
-        linestyle="-.",
-    )
-    ax2.plot(
-        q_dva_an,
-        np.abs(dva_an),
-        color=col_anode,
-        linewidth=lw_dva,
-        linestyle="-.",
-    )
+        def draw_double_arrow(
+            ax: Axes,
+            x_start: float,
+            x_end: float,
+            y_level: float,
+            color: NDArray[np.floating],
+        ) -> None:
+            ax.annotate(
+                "",
+                xy=(x_end, y_level),
+                xytext=(x_start, y_level),
+                arrowprops={
+                    "arrowstyle": "<->",
+                    "color": color,
+                    "linewidth": arrow_line_width,
+                    "shrinkA": 0.0,
+                    "shrinkB": 0.0,
+                    "mutation_scale": 12.0,
+                },
+            )
 
-    ax2.set_xlim(*x_lim_dyn)
-    ax2.set_ylim(*y_lim_dva)
-    y_ticks = np.arange(0.0, np.floor(y_lim_dva[1]) + 1.0, 1.0)
-    if y_ticks.size == 0:
-        y_ticks = np.array([0.0])
-    ax2.set_yticks(y_ticks)
-    # Re-apply limits because setting ticks can auto-expand axes.
-    ax2.set_ylim(*y_lim_dva)
-    ax2.set_xlabel("SOC / -", fontsize=base_font)
-    ax2.set_ylabel(r"$dU(dQ)^{-1}\cdot C_{\mathrm{act}}$ / $\mathrm{V}$", fontsize=base_font)
-    ax2.tick_params(axis="both", labelsize=axis_tick_font)
-    ax2.grid(True, alpha=0.3)
-    for spine in ax2.spines.values():
-        spine.set_linewidth(axes_box_line_width)
+        draw_double_arrow(
+            ax1,
+            float(np.min(cathode_soc)),
+            float(np.max(cathode_soc)),
+            float(np.max(cathode_u) + alpha_cat_arrow_y_offset),
+            col_cathode,
+        )
+        ax1.text(
+            float(0.5 * (np.min(cathode_soc) + np.max(cathode_soc))),
+            float(np.max(cathode_u) - alpha_cat_text_down),
+            rf"$\alpha_{{\mathrm{{cat}}}} = {alpha_ca:.2f}$",
+            color=col_cathode,
+            fontsize=base_font,
+            ha="center",
+            va="center",
+        )
 
-    fig.subplots_adjust(
-        left=0.10,
-        right=0.98,
-        bottom=0.24 if compact_height else 0.21,
-        top=axes_top,
-    )
+        draw_double_arrow(
+            ax1,
+            float(np.min(anode_soc)),
+            float(np.max(anode_soc)),
+            float(np.max(anode_u) + alpha_an_arrow_y_offset),
+            col_anode,
+        )
+        ax1.text(
+            float(0.5 * (np.min(anode_soc) + np.max(anode_soc))),
+            float(np.max(anode_u) + alpha_an_text_up),
+            rf"$\alpha_{{\mathrm{{an}}}} = {alpha_an:.2f}$",
+            color=col_anode,
+            fontsize=base_font,
+            ha="center",
+            va="center",
+        )
+
+        draw_double_arrow(
+            ax1,
+            # Keep cathode beta arrow visible even when cathode SOC extends below 0.
+            # Using min(0, ...) avoids collapsing the arrow to zero length.
+            float(min(0.0, np.min(cathode_soc) - beta_cat_x_shift_to_zero)),
+            0.0,
+            float(np.min(cathode_u) + beta_cat_arrow_y_offset),
+            col_cathode,
+        )
+        draw_double_arrow(
+            ax1,
+            float(np.min(anode_soc)),
+            0.0,
+            float(np.min(anode_u) + beta_an_arrow_y_offset),
+            col_anode,
+        )
+        beta_text_x = (
+            0.03
+            if x_lim_dyn[0] <= 0.03 <= x_lim_dyn[1]
+            else x_lim_dyn[0] + 0.03 * (x_lim_dyn[1] - x_lim_dyn[0])
+        )
+        ax1.text(
+            beta_text_x,
+            float(np.min(cathode_u) + beta_cat_text_up),
+            rf"$\beta_{{\mathrm{{cat}}}} = {beta_ca:.2f}$",
+            color=col_cathode,
+            fontsize=base_font,
+            ha="left",
+            va="center",
+        )
+        ax1.text(
+            beta_text_x,
+            float(np.min(anode_u) + beta_an_text_up),
+            rf"$\beta_{{\mathrm{{an}}}} = {beta_an:.2f}$",
+            color=col_anode,
+            fontsize=base_font,
+            ha="left",
+            va="center",
+        )
+
+        # DVA panel (1x height)
+        ax2.plot(
+            measured_q_dva,
+            measured_dva,
+            color=col_meas,
+            linewidth=lw_dva,
+            linestyle="-",
+        )
+        ax2.plot(
+            reconstructed_q_dva,
+            reconstructed_dva,
+            color=col_model,
+            linewidth=lw_dva,
+            linestyle="-.",
+        )
+        ax2.plot(
+            q_dva_cath,
+            dva_cath,
+            color=col_cathode,
+            linewidth=lw_dva,
+            linestyle="-.",
+        )
+        ax2.plot(
+            q_dva_an,
+            np.abs(dva_an),
+            color=col_anode,
+            linewidth=lw_dva,
+            linestyle="-.",
+        )
+
+        ax2.set_xlim(*x_lim_dyn)
+        ax2.set_ylim(*y_lim_dva)
+        y_ticks = np.arange(0.0, np.floor(y_lim_dva[1]) + 1.0, 1.0)
+        if y_ticks.size == 0:
+            y_ticks = np.array([0.0])
+        ax2.set_yticks(y_ticks)
+        # Re-apply limits because setting ticks can auto-expand axes.
+        ax2.set_ylim(*y_lim_dva)
+        ax2.set_xlabel("SOC / -", fontsize=base_font)
+        ax2.set_ylabel(r"$dU(dQ)^{-1}\cdot C_{\mathrm{act}}$ / $\mathrm{V}$", fontsize=base_font)
+        ax2.tick_params(axis="both", labelsize=axis_tick_font)
+        ax2.grid(True, alpha=0.3)
+        for spine in ax2.spines.values():
+            spine.set_linewidth(axes_box_line_width)
+
+        fig.subplots_adjust(
+            left=0.10,
+            right=0.98,
+            bottom=0.24 if compact_height else 0.21,
+            top=axes_top,
+        )
     return fig
 
 
@@ -653,6 +686,7 @@ def plot_ocv_comparison(
     simulated_voltage: NDArray[np.floating] | None = None,
     ax: Axes | None = None,
     title: str = "OCV Comparison",
+    x_is_soc: bool | None = None,
 ) -> Axes:
     """Plot measured vs simulated OCV curves.
 
@@ -670,88 +704,80 @@ def plot_ocv_comparison(
         Matplotlib axes to plot on
     title : str, optional
         Plot title
+    x_is_soc : bool, optional
+        Whether the x-axis is normalized SOC (labelled ``SOC / -``) or a
+        raw capacity (labelled ``$Q$ / Ah``). Defaults to ``None``, which
+        infers it from the data range via the ``_is_normalized_capacity``
+        heuristic: a cell with a capacity below 1 Ah stays inside [0, 1]
+        and is then misread as SOC. Pass ``True``/``False`` to pin the
+        label instead of relying on the heuristic.
 
     Returns
     -------
     Axes
-        The matplotlib axes object
+        The matplotlib axes object. If ``ax`` was not provided, this call
+        created a new figure; close it with ``plt.close(ax.figure)`` once
+        done, or a loop over many CUs accumulates figures in the pyplot
+        registry.
     """
-    _setup_style()
+    style = _setup_style()
 
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 5))
+    with plt.rc_context(style):
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 5))
 
-    # Plot measured
-    ax.plot(
-        measured_capacity,
-        measured_voltage,
-        "-",
-        color=TUM_COLORS["blue"],
-        linewidth=2,
-        label="Measured",
-    )
-
-    # Plot simulated if provided
-    if simulated_capacity is not None and simulated_voltage is not None:
+        # Plot measured
         ax.plot(
-            simulated_capacity,
-            simulated_voltage,
-            "--",
-            color=TUM_COLORS["orange"],
+            measured_capacity,
+            measured_voltage,
+            "-",
+            color=TUM_COLORS["blue"],
             linewidth=2,
-            label="Simulated",
+            label="Measured",
         )
 
-    def _is_normalized_capacity(values: NDArray[np.floating]) -> bool:
-        values = np.asarray(values, dtype=np.float64)
-        if values.size == 0:
-            return False
-        vmin = np.nanmin(values)
-        vmax = np.nanmax(values)
-        return bool((vmin >= -1e-6) and (vmax <= 1.0 + 1e-6))
+        # Plot simulated if provided
+        if simulated_capacity is not None and simulated_voltage is not None:
+            ax.plot(
+                simulated_capacity,
+                simulated_voltage,
+                "--",
+                color=TUM_COLORS["orange"],
+                linewidth=2,
+                label="Simulated",
+            )
 
-    is_normalized = _is_normalized_capacity(measured_capacity)
-    if simulated_capacity is not None:
-        is_normalized = is_normalized and _is_normalized_capacity(simulated_capacity)
+        if x_is_soc is None:
+            is_normalized = _is_normalized_capacity(measured_capacity)
+            if simulated_capacity is not None:
+                is_normalized = is_normalized and _is_normalized_capacity(simulated_capacity)
+        else:
+            is_normalized = x_is_soc
 
-    # MATLAB-style limits (plot_OCV_model_param_show.m)
-    x_vals = [np.asarray(measured_capacity)]
-    y_vals = [np.asarray(measured_voltage)]
-    if simulated_capacity is not None and simulated_voltage is not None:
-        x_vals.append(np.asarray(simulated_capacity))
-        y_vals.append(np.asarray(simulated_voltage))
+        # MATLAB-style limits (plot_OCV_model_param_show.m)
+        x_all = _concat_finite_arrays(measured_capacity, simulated_capacity)
+        y_all = _concat_finite_arrays(measured_voltage, simulated_voltage)
 
-    x_all = (
-        np.concatenate([xv[np.isfinite(xv)] for xv in x_vals if xv.size])
-        if x_vals
-        else np.array([])
-    )
-    y_all = (
-        np.concatenate([yv[np.isfinite(yv)] for yv in y_vals if yv.size])
-        if y_vals
-        else np.array([])
-    )
+        if x_all.size:
+            x_min = float(np.min(x_all))
+            x_max = float(np.max(x_all))
+            range_x = max(x_max - x_min, 1.0)
+            x_min_need = min(x_min, 0.0) - (0.05 + 0.02) * range_x
+            x_max_need = x_max + 0.08 * range_x
+            ax.set_xlim(x_min_need, x_max_need)
 
-    if x_all.size:
-        x_min = float(np.min(x_all))
-        x_max = float(np.max(x_all))
-        range_x = max(x_max - x_min, 1.0)
-        x_min_need = min(x_min, 0.0) - (0.05 + 0.02) * range_x
-        x_max_need = x_max + 0.08 * range_x
-        ax.set_xlim(x_min_need, x_max_need)
+        if y_all.size:
+            y_min = float(np.min(y_all))
+            y_max = float(np.max(y_all))
+            range_y = max(y_max - y_min, 1.0)
+            y_lim = (y_min - 0.30, y_max + 0.04 * range_y)
+            ax.set_ylim(*y_lim)
 
-    if y_all.size:
-        y_min = float(np.min(y_all))
-        y_max = float(np.max(y_all))
-        range_y = max(y_max - y_min, 1.0)
-        y_lim = (y_min - 0.30, y_max + 0.04 * range_y)
-        ax.set_ylim(*y_lim)
-
-    ax.set_xlabel(r"SOC / -" if is_normalized else r"$Q$ / Ah")
-    ax.set_ylabel(r"$U$ / V")
-    ax.set_title(title)
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
+        ax.set_xlabel(r"SOC / -" if is_normalized else r"$Q$ / Ah")
+        ax.set_ylabel(r"$U$ / V")
+        ax.set_title(title)
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
 
     return ax
 
@@ -765,6 +791,8 @@ def plot_dva_comparison(
     soc_max: float | None = None,
     ax: Axes | None = None,
     title: str = "DVA Comparison",
+    x_is_soc: bool | None = None,
+    y_max_dva: float = _DVA_YMAX_DEFAULT,
 ) -> Axes:
     """Plot measured vs simulated DVA curves.
 
@@ -786,75 +814,103 @@ def plot_dva_comparison(
         Matplotlib axes to plot on
     title : str, optional
         Plot title
+    x_is_soc : bool, optional
+        Whether the x-axis is normalized SOC (labelled ``SOC / -``) or a
+        raw capacity (labelled ``$Q$ / Ah``). Defaults to ``None``, which
+        infers it from the data range via the ``_is_normalized_capacity``
+        heuristic: a cell with a capacity below 1 Ah stays inside [0, 1]
+        and is then misread as SOC. Pass ``True``/``False`` to pin the
+        label instead of relying on the heuristic.
+    y_max_dva : float, optional
+        Upper y-limit the panel starts from (default ``2.5``, as in
+        ``plot_ocv_model_param_show``). It gives way when the peak inside
+        the middle 10-90 % of the x span sits above it.
 
     Returns
     -------
     Axes
-        The matplotlib axes object
+        The matplotlib axes object. If ``ax`` was not provided, this call
+        created a new figure; close it with ``plt.close(ax.figure)`` once
+        done, or a loop over many CUs accumulates figures in the pyplot
+        registry.
     """
-    _setup_style()
+    style = _setup_style()
 
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 5))
+    with plt.rc_context(style):
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 5))
 
-    # Plot ROI region if specified
-    if soc_min is not None and soc_max is not None:
-        ax.axvspan(soc_min, soc_max, alpha=0.1, color="green", label="ROI")
+        # Plot ROI region if specified
+        if soc_min is not None and soc_max is not None:
+            ax.axvspan(soc_min, soc_max, alpha=0.1, color="green", label="ROI")
 
-    # Plot measured
-    ax.plot(
-        measured_soc, measured_dva, "-", color=TUM_COLORS["blue"], linewidth=1.5, label="Measured"
-    )
-
-    # Plot simulated if provided
-    if simulated_soc is not None and simulated_dva is not None:
+        # Plot measured
         ax.plot(
-            simulated_soc,
-            simulated_dva,
-            "--",
-            color=TUM_COLORS["orange"],
+            measured_soc,
+            measured_dva,
+            "-",
+            color=TUM_COLORS["blue"],
             linewidth=1.5,
-            label="Simulated",
+            label="Measured",
         )
 
-    # MATLAB-style limits (plot_OCV_model_param_show.m)
-    x_vals = [np.asarray(measured_soc)]
-    y_vals = [np.asarray(measured_dva)]
-    if simulated_soc is not None and simulated_dva is not None:
-        x_vals.append(np.asarray(simulated_soc))
-        y_vals.append(np.asarray(simulated_dva))
+        # Plot simulated if provided
+        if simulated_soc is not None and simulated_dva is not None:
+            ax.plot(
+                simulated_soc,
+                simulated_dva,
+                "--",
+                color=TUM_COLORS["orange"],
+                linewidth=1.5,
+                label="Simulated",
+            )
 
-    x_all = (
-        np.concatenate([xv[np.isfinite(xv)] for xv in x_vals if xv.size])
-        if x_vals
-        else np.array([])
-    )
-    y_all = (
-        np.concatenate([yv[np.isfinite(yv)] for yv in y_vals if yv.size])
-        if y_vals
-        else np.array([])
-    )
+        if x_is_soc is None:
+            is_normalized = _is_normalized_capacity(measured_soc)
+            if simulated_soc is not None:
+                is_normalized = is_normalized and _is_normalized_capacity(simulated_soc)
+        else:
+            is_normalized = x_is_soc
 
-    if x_all.size:
-        x_min = float(np.min(x_all))
-        x_max = float(np.max(x_all))
-        range_x = max(x_max - x_min, 1.0)
-        x_min_need = min(x_min, 0.0) - (0.05 + 0.02) * range_x
-        x_max_need = x_max + 0.08 * range_x
-        ax.set_xlim(x_min_need, x_max_need)
+        # MATLAB-style limits (plot_OCV_model_param_show.m)
+        x_all = _concat_finite_arrays(measured_soc, simulated_soc)
+        y_all = _concat_finite_arrays(measured_dva, simulated_dva)
 
-    if y_all.size:
-        y_min = float(np.min(y_all))
-        y_max = float(np.max(y_all))
-        range_y = max(y_max - y_min, 1.0)
-        y_lim = (max(0.0, y_min - 0.05 * range_y), 3.2)
-        ax.set_ylim(*y_lim)
+        if x_all.size:
+            x_min = float(np.min(x_all))
+            x_max = float(np.max(x_all))
+            range_x = max(x_max - x_min, 1.0)
+            x_min_need = min(x_min, 0.0) - (0.05 + 0.02) * range_x
+            x_max_need = x_max + 0.08 * range_x
+            ax.set_xlim(x_min_need, x_max_need)
 
-    ax.set_xlabel(r"SOC / -")
-    ax.set_ylabel(r"$dU/dQ \cdot C_{\mathrm{act}}$ / V")
-    ax.set_title(title)
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
+        if y_all.size:
+            # Same rule as plot_ocv_model_param_show: a fixed cap keeps the
+            # staging features legible, and the divergence at the two ends of
+            # the curve does not set the scale. The cap gives way to the peak
+            # inside the middle 10-90 % of the x span.
+            y_min = float(np.min(y_all))
+            range_y = max(float(np.max(y_all)) - y_min, 1.0)
+            y_top = float(y_max_dva)
+            if x_all.size:
+                x_lo = float(np.min(x_all))
+                span = float(np.max(x_all)) - x_lo
+                roi_peak = _peak_between(
+                    x_lo + 0.10 * span,
+                    x_lo + 0.90 * span,
+                    (measured_soc, measured_dva),
+                    (simulated_soc, simulated_dva),
+                )
+                if roi_peak is not None and roi_peak > y_top:
+                    y_top = 1.05 * roi_peak
+            y_bottom = max(0.0, y_min - 0.05 * range_y)
+            ax.set_ylim(y_bottom, max(y_top, y_bottom + 0.05 * range_y))
+
+        ax.set_xlabel(r"SOC / -" if is_normalized else r"$Q$ / Ah")
+        ax.set_ylabel(r"$dU/dQ \cdot C_{\mathrm{act}}$ / V")
+        ax.set_title(title)
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
 
     return ax
 
@@ -893,43 +949,47 @@ def plot_ica_comparison(
     Returns
     -------
     Axes
-        The matplotlib axes object
+        The matplotlib axes object. If ``ax`` was not provided, this call
+        created a new figure; close it with ``plt.close(ax.figure)`` once
+        done, or a loop over many CUs accumulates figures in the pyplot
+        registry.
     """
-    _setup_style()
+    style = _setup_style()
 
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 5))
+    with plt.rc_context(style):
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 5))
 
-    # Plot ROI region if specified
-    if v_min is not None and v_max is not None:
-        ax.axvspan(v_min, v_max, alpha=0.1, color="green", label="ROI")
+        # Plot ROI region if specified
+        if v_min is not None and v_max is not None:
+            ax.axvspan(v_min, v_max, alpha=0.1, color="green", label="ROI")
 
-    # Plot measured
-    ax.plot(
-        measured_voltage,
-        measured_ica,
-        "-",
-        color=TUM_COLORS["blue"],
-        linewidth=1.5,
-        label="Measured",
-    )
-
-    # Plot simulated if provided
-    if simulated_voltage is not None and simulated_ica is not None:
+        # Plot measured
         ax.plot(
-            simulated_voltage,
-            simulated_ica,
-            "--",
-            color=TUM_COLORS["orange"],
+            measured_voltage,
+            measured_ica,
+            "-",
+            color=TUM_COLORS["blue"],
             linewidth=1.5,
-            label="Simulated",
+            label="Measured",
         )
 
-    ax.set_xlabel(r"$U$ / V")
-    ax.set_ylabel(r"$dQ/dU$ / Ah V$^{-1}$")
-    ax.set_title(title)
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
+        # Plot simulated if provided
+        if simulated_voltage is not None and simulated_ica is not None:
+            ax.plot(
+                simulated_voltage,
+                simulated_ica,
+                "--",
+                color=TUM_COLORS["orange"],
+                linewidth=1.5,
+                label="Simulated",
+            )
+
+        ax.set_xlabel(r"$U$ / V")
+        ax.set_ylabel(r"$dQ/dU$ / Ah V$^{-1}$")
+        ax.set_title(title)
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
 
     return ax
 
@@ -962,86 +1022,90 @@ def plot_degradation_modes(
     Returns
     -------
     Axes
-        The matplotlib axes object
+        The matplotlib axes object. If ``ax`` was not provided, this call
+        created a new figure; close it with ``plt.close(ax.figure)`` once
+        done, or a loop over many CUs accumulates figures in the pyplot
+        registry.
     """
-    _setup_style()
+    style = _setup_style()
 
-    if ax is None:
-        # Wider figure if showing blend components
-        n_extra = (2 if show_anode_blend else 0) + (2 if show_cathode_blend else 0)
-        fig_width = 6 + n_extra * 0.8
-        _, ax = plt.subplots(figsize=(fig_width, 4))
+    with plt.rc_context(style):
+        if ax is None:
+            # Wider figure if showing blend components
+            n_extra = (2 if show_anode_blend else 0) + (2 if show_cathode_blend else 0)
+            fig_width = 6 + n_extra * 0.8
+            _, ax = plt.subplots(figsize=(fig_width, 4))
 
-    # Build dynamic bar data
-    modes = []
-    values = []
-    colors = []
+        # Build dynamic bar data
+        modes = []
+        values = []
+        colors = []
 
-    # LLI
-    modes.append("LLI")
-    values.append(degradation_modes.lli * 100)
-    colors.append(TUM_COLORS["blue"])
+        # LLI
+        modes.append("LLI")
+        values.append(degradation_modes.lli * 100)
+        colors.append(TUM_COLORS["blue"])
 
-    # Anode LAM
-    modes.append("LAM_an")
-    values.append(degradation_modes.lam_an * 100)
-    colors.append(TUM_COLORS["orange"])
+        # Anode LAM
+        modes.append("LAM_an")
+        values.append(degradation_modes.lam_an * 100)
+        colors.append(TUM_COLORS["orange"])
 
-    # Anode blend components (if enabled)
-    if show_anode_blend:
-        modes.append("An-blend1")
-        values.append(degradation_modes.lam_anode_blend1 * 100)
-        colors.append(TUM_COLORS["light_blue"])
+        # Anode blend components (if enabled)
+        if show_anode_blend:
+            modes.append("An-blend1")
+            values.append(degradation_modes.lam_anode_blend1 * 100)
+            colors.append(TUM_COLORS["light_blue"])
 
-        modes.append("An-blend2")
-        values.append(degradation_modes.lam_anode_blend2 * 100)
-        colors.append(TUM_COLORS["dark_blue"])
+            modes.append("An-blend2")
+            values.append(degradation_modes.lam_anode_blend2 * 100)
+            colors.append(TUM_COLORS["dark_blue"])
 
-    # Cathode LAM
-    modes.append("LAM_ca")
-    values.append(degradation_modes.lam_ca * 100)
-    colors.append(TUM_COLORS["green"])
+        # Cathode LAM
+        modes.append("LAM_ca")
+        values.append(degradation_modes.lam_ca * 100)
+        colors.append(TUM_COLORS["green"])
 
-    # Cathode blend components (if enabled)
-    if show_cathode_blend:
-        modes.append("Ca-blend1")
-        values.append(degradation_modes.lam_cathode_blend1 * 100)
-        colors.append(TUM_COLORS["lighter_blue"])
+        # Cathode blend components (if enabled)
+        if show_cathode_blend:
+            modes.append("Ca-blend1")
+            values.append(degradation_modes.lam_cathode_blend1 * 100)
+            colors.append(TUM_COLORS["lighter_blue"])
 
-        modes.append("Ca-blend2")
-        values.append(degradation_modes.lam_cathode_blend2 * 100)
-        colors.append(TUM_COLORS["medium_gray"])
+            modes.append("Ca-blend2")
+            values.append(degradation_modes.lam_cathode_blend2 * 100)
+            colors.append(TUM_COLORS["medium_gray"])
 
-    # Capacity loss (always last)
-    modes.append("Capacity\nLoss")
-    values.append(degradation_modes.capacity_loss * 100)
-    colors.append(TUM_COLORS["gray"])
+        # Capacity loss (always last)
+        modes.append("Capacity\nLoss")
+        values.append(degradation_modes.capacity_loss * 100)
+        colors.append(TUM_COLORS["gray"])
 
-    # Create bar chart
-    bars = ax.bar(modes, values, color=colors, edgecolor="black", linewidth=0.5)
+        # Create bar chart
+        bars = ax.bar(modes, values, color=colors, edgecolor="black", linewidth=0.5)
 
-    # Add value labels
-    if show_values:
-        for bar, value in zip(bars, values):
-            height = bar.get_height()
-            ax.annotate(
-                f"{value:.1f}%",
-                xy=(bar.get_x() + bar.get_width() / 2, height),
-                xytext=(0, 3),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
+        # Add value labels
+        if show_values:
+            for bar, value in zip(bars, values):
+                height = bar.get_height()
+                ax.annotate(
+                    f"{value:.1f}%",
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                )
 
-    ax.set_ylabel("Degradation / %")
-    ax.set_title(title)
-    ax.axhline(y=0, color="black", linewidth=0.5)
-    ax.grid(True, alpha=0.3, axis="y")
+        ax.set_ylabel("Degradation / %")
+        ax.set_title(title)
+        ax.axhline(y=0, color="black", linewidth=0.5)
+        ax.grid(True, alpha=0.3, axis="y")
 
-    # Rotate labels if many bars
-    if len(modes) > 5:
-        ax.tick_params(axis="x", rotation=30)
+        # Rotate labels if many bars
+        if len(modes) > 5:
+            ax.tick_params(axis="x", rotation=30)
 
     return ax
 
@@ -1052,6 +1116,7 @@ def plot_dma_result(
     figsize: tuple[float, float] = (12, 8),
     show_anode_blend: bool = False,
     show_cathode_blend: bool = False,
+    x_is_soc: bool | None = None,
 ) -> Figure:
     """Create a multi-panel summary of DMA results.
 
@@ -1073,74 +1138,83 @@ def plot_dma_result(
         Show anode blend1 and blend2 in degradation modes bar chart (default: False)
     show_cathode_blend : bool, optional
         Show cathode blend1 and blend2 in degradation modes bar chart (default: False)
+    x_is_soc : bool, optional
+        Forwarded to the OCV and DVA panels; see ``plot_ocv_comparison`` /
+        ``plot_dva_comparison`` for the heuristic this overrides. Defaults
+        to ``None`` (range heuristic; cells below 1 Ah are misread as SOC).
 
     Returns
     -------
     Figure
-        Matplotlib figure object
+        Matplotlib figure object. Close it with ``plt.close(fig)`` once
+        done with it; a loop over many CUs otherwise accumulates figures
+        in the pyplot registry.
     """
-    _setup_style()
+    style = _setup_style()
 
-    fig, axes = plt.subplots(2, 2, figsize=figsize)
-    fig.suptitle("Degradation Mode Analysis Results", fontsize=14, fontweight="bold")
+    with plt.rc_context(style):
+        fig, axes = plt.subplots(2, 2, figsize=figsize)
+        fig.suptitle("Degradation Mode Analysis Results", fontsize=14, fontweight="bold")
 
-    # Prepare simulated data if available
-    sim_cap = sim_volt = sim_dva = sim_ica = None
-    if simulated_curves is not None:
-        sim_cap = simulated_curves.get("capacity")
-        sim_volt = simulated_curves.get("voltage")
-        sim_dva = simulated_curves.get("dva")
-        sim_ica = simulated_curves.get("ica")
+        # Prepare simulated data if available
+        sim_cap = sim_volt = sim_dva = sim_ica = None
+        if simulated_curves is not None:
+            sim_cap = simulated_curves.get("capacity")
+            sim_volt = simulated_curves.get("voltage")
+            sim_dva = simulated_curves.get("dva")
+            sim_ica = simulated_curves.get("ica")
 
-    # OCV comparison
-    plot_ocv_comparison(
-        result.measured_capacity,
-        result.measured_voltage,
-        sim_cap,
-        sim_volt,
-        ax=axes[0, 0],
-        title="OCV Comparison",
-    )
+        # OCV comparison
+        plot_ocv_comparison(
+            result.measured_capacity,
+            result.measured_voltage,
+            sim_cap,
+            sim_volt,
+            ax=axes[0, 0],
+            title="OCV Comparison",
+            x_is_soc=x_is_soc,
+        )
 
-    # DVA comparison
-    plot_dva_comparison(
-        result.measured_capacity,
-        result.measured_dva,
-        sim_cap,
-        sim_dva,
-        ax=axes[0, 1],
-        title="DVA Comparison",
-    )
+        # DVA comparison
+        plot_dva_comparison(
+            result.measured_capacity,
+            result.measured_dva,
+            sim_cap,
+            sim_dva,
+            ax=axes[0, 1],
+            title="DVA Comparison",
+            x_is_soc=x_is_soc,
+        )
 
-    # ICA comparison
-    plot_ica_comparison(
-        result.measured_voltage,
-        result.measured_ica,
-        sim_volt,
-        sim_ica,
-        ax=axes[1, 0],
-        title="ICA Comparison",
-    )
+        # ICA comparison
+        plot_ica_comparison(
+            result.measured_voltage,
+            result.measured_ica,
+            sim_volt,
+            sim_ica,
+            ax=axes[1, 0],
+            title="ICA Comparison",
+        )
 
-    # Degradation modes
-    plot_degradation_modes(
-        result.degradation_modes,
-        ax=axes[1, 1],
-        title=f"Degradation Modes (RMSE: {result.rmse * 1000:.1f} mV)",
-        show_anode_blend=show_anode_blend,
-        show_cathode_blend=show_cathode_blend,
-    )
+        # Degradation modes
+        plot_degradation_modes(
+            result.degradation_modes,
+            ax=axes[1, 1],
+            title=f"Degradation Modes (RMSE: {result.rmse * 1000:.1f} mV)",
+            show_anode_blend=show_anode_blend,
+            show_cathode_blend=show_cathode_blend,
+        )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        plt.tight_layout()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            plt.tight_layout()
     return fig
 
 
 def plot_aging_study(
     results: AgingStudyResults | Sequence[DMAResult],
     x_values: Sequence[float] | None = None,
-    x_label: str = "EFC",
+    x_label: str = "EFC / -",
     figsize: tuple[float, float] | None = None,
     plot_cathode: bool = True,
     plot_anode: bool = True,
@@ -1163,7 +1237,7 @@ def plot_aging_study(
     x_values : Sequence[float], optional
         X-axis values (e.g., EFC). If not provided, uses efc_values or indices.
     x_label : str, optional
-        Label for x-axis (default: "EFC")
+        Label for x-axis (default: "EFC / -")
     figsize : tuple, optional
         Figure size (width, height). Auto-calculated if None.
     plot_cathode : bool, optional
@@ -1179,7 +1253,8 @@ def plot_aging_study(
     use_cathode_blend : bool, optional
         Show separate cathode blend1/blend2 panels (default: False)
     calendar_aging : bool, optional
-        If True, x-label shows "RPT Number", else "EFC" (default: False)
+        If True, x-label shows "RPT Number / -", else the value of
+        ``x_label`` (default: False)
     labels : dict, optional
         Custom labels for panels. Keys: 'cathode', 'anode', 'lli', 'rmse',
         'anode_blend1', 'anode_blend2', 'cathode_blend1', 'cathode_blend2'
@@ -1187,15 +1262,26 @@ def plot_aging_study(
     Returns
     -------
     Figure
-        Matplotlib figure object
+        Matplotlib figure object. Close it with ``plt.close(fig)`` once
+        done with it; a loop over many CUs otherwise accumulates figures
+        in the pyplot registry.
+
+    Raises
+    ------
+    ValueError
+        If every panel is disabled, or if ``results`` is an
+        ``AgingStudyResults`` whose non-empty ``efc_values`` length does not
+        match the number of CUs being plotted (a mismatch would otherwise
+        silently mislabel the x-axis). An empty ``efc_values`` warns and falls
+        back to the RPT index, as an all-``None`` list does.
     """
-    _setup_style()
+    style = _setup_style()
 
     # Default labels
     default_labels = {
         "cathode": "Cathode",
         "anode": "Anode",
-        "lli": "Charge-carrier-inv",
+        "lli": "LLI",
         "rmse": "RMSE",
         "anode_blend1": "An-blend1",
         "anode_blend2": "An-blend2",
@@ -1208,16 +1294,33 @@ def plot_aging_study(
 
     # Handle different input types
     if isinstance(results, AgingStudyResults):
-        if x_values is None:
-            if results.efc_values:
-                x_values = results.efc_values
-            else:
-                x_values = list(range(1, len(results.results) + 1))
         result_list = (
             [results.results[name] for name in results.cu_labels]
             if results.cu_labels
             else list(results.results.values())
         )
+        if x_values is None:
+            n_plotted = len(result_list)
+            efc_values = results.efc_values
+            if efc_values and len(efc_values) != n_plotted:
+                raise ValueError(
+                    f"AgingStudyResults.efc_values has {len(efc_values)} entries but "
+                    f"{n_plotted} CUs are being plotted; refusing to guess the x-axis "
+                    "alignment."
+                )
+            # An empty list carries as much EFC information as a list of Nones,
+            # so both take the index fallback rather than the length check.
+            n_missing = sum(value is None for value in efc_values) if efc_values else n_plotted
+            if efc_values and n_missing == 0:
+                x_values = [value for value in efc_values if value is not None]
+            else:
+                if n_missing:
+                    warnings.warn(
+                        f"{n_missing} of {n_plotted} check-ups carry no EFC value; "
+                        "falling back to the RPT-index x-axis.",
+                        stacklevel=2,
+                    )
+                x_values = list(range(1, n_plotted + 1))
     else:
         if x_values is None:
             x_values = list(range(1, len(results) + 1))
@@ -1284,69 +1387,75 @@ def plot_aging_study(
     else:
         y_min_padded, y_max_padded = 0, 1
 
-    # Create figure with custom spacing:
-    # - tighter spacing between DM panels
-    # - larger gap before RMSE panel
-    if plot_rmse and panels:
-        fig = plt.figure(figsize=figsize)
-        width_ratios = [1.0] * len(panels) + [0.35, 1.0]  # spacer, then RMSE
-        gs = fig.add_gridspec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.07)
-        lam_axes = [fig.add_subplot(gs[0, i]) for i in range(len(panels))]
-        ax_rmse = fig.add_subplot(gs[0, -1])
-    elif plot_rmse:
-        fig, single_ax = plt.subplots(1, 1, figsize=figsize, sharey=False)
-        lam_axes = []
-        ax_rmse = single_ax
-    else:
-        fig, raw_axes = plt.subplots(1, len(panels), figsize=figsize, sharey=False)
-        lam_axes = [raw_axes] if len(panels) == 1 else list(raw_axes)
-        ax_rmse = None
-
-    # X-axis label based on aging type
-    if calendar_aging:
-        actual_x_label = "RPT Number / -"
-    else:
-        actual_x_label = x_label if x_label else "EFC"
-
-    # Plot LAM panels
-    for idx, (label, data) in enumerate(panels):
-        ax = lam_axes[idx]
-        marker = markers[idx % len(markers)]
-
-        ax.plot(
-            x_values, data, marker, color=tum_blue, linewidth=line_width, markersize=marker_size
-        )
-
-        ax.set_title(label, fontsize=1.2 * font_sz)
-        ax.set_xlabel(actual_x_label, fontsize=font_sz)
-        ax.set_xlim(auto=True)
-        ax.set_ylim(y_min_padded, y_max_padded)
-        ax.grid(True, alpha=0.3)
-        ax.tick_params(direction="out", length=0)
-
-        # Y-label only on first panel
-        if idx == 0:
-            ax.set_ylabel("Capacity Loss / %", fontsize=font_sz)
+    with plt.rc_context(style):
+        # Create figure with custom spacing:
+        # - tighter spacing between DM panels
+        # - larger gap before RMSE panel
+        if plot_rmse and panels:
+            fig = plt.figure(figsize=figsize)
+            width_ratios = [1.0] * len(panels) + [0.35, 1.0]  # spacer, then RMSE
+            gs = fig.add_gridspec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.07)
+            lam_axes = [fig.add_subplot(gs[0, i]) for i in range(len(panels))]
+            ax_rmse = fig.add_subplot(gs[0, -1])
+        elif plot_rmse:
+            fig, single_ax = plt.subplots(1, 1, figsize=figsize, sharey=False)
+            lam_axes = []
+            ax_rmse = single_ax
         else:
-            ax.set_yticklabels([])
+            fig, raw_axes = plt.subplots(1, len(panels), figsize=figsize, sharey=False)
+            lam_axes = [raw_axes] if len(panels) == 1 else list(raw_axes)
+            ax_rmse = None
 
-    # RMSE panel (separate y-axis)
-    if plot_rmse and rmse_data is not None and ax_rmse is not None:
-        ax_rmse.plot(
-            x_values, rmse_data, "-o", color=tum_blue, linewidth=line_width, markersize=marker_size
-        )
+        # X-axis label based on aging type
+        if calendar_aging:
+            actual_x_label = "RPT Number / -"
+        else:
+            actual_x_label = x_label if x_label else "EFC / -"
 
-        ax_rmse.set_title(labels["rmse"], fontsize=1.2 * font_sz)
-        ax_rmse.set_xlabel(actual_x_label, fontsize=font_sz)
-        ax_rmse.set_ylabel("RMSE / mV", fontsize=font_sz)
-        ax_rmse.set_xlim(auto=True)
-        ax_rmse.set_ylim(0, max(rmse_data) * 1.1 if max(rmse_data) > 0 else 1)
-        ax_rmse.grid(True, alpha=0.3)
-        ax_rmse.tick_params(direction="out", length=0)
+        # Plot LAM panels
+        for idx, (label, data) in enumerate(panels):
+            ax = lam_axes[idx]
+            marker = markers[idx % len(markers)]
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        plt.tight_layout()
+            ax.plot(
+                x_values, data, marker, color=tum_blue, linewidth=line_width, markersize=marker_size
+            )
+
+            ax.set_title(label, fontsize=1.2 * font_sz)
+            ax.set_xlabel(actual_x_label, fontsize=font_sz)
+            ax.set_xlim(auto=True)
+            ax.set_ylim(y_min_padded, y_max_padded)
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(direction="out", length=0)
+
+            # Y-label only on first panel
+            if idx == 0:
+                ax.set_ylabel("Capacity Loss / %", fontsize=font_sz)
+            else:
+                ax.set_yticklabels([])
+
+        # RMSE panel (separate y-axis)
+        if plot_rmse and rmse_data is not None and ax_rmse is not None:
+            ax_rmse.plot(
+                x_values,
+                rmse_data,
+                "-o",
+                color=tum_blue,
+                linewidth=line_width,
+                markersize=marker_size,
+            )
+
+            ax_rmse.set_title(labels["rmse"], fontsize=1.2 * font_sz)
+            ax_rmse.set_xlabel(actual_x_label, fontsize=font_sz)
+            ax_rmse.set_ylabel("RMSE / mV", fontsize=font_sz)
+            ax_rmse.set_xlim(auto=True)
+            ax_rmse.set_ylim(0, max(rmse_data) * 1.1 if max(rmse_data) > 0 else 1)
+            ax_rmse.grid(True, alpha=0.3)
+            ax_rmse.tick_params(direction="out", length=0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            plt.tight_layout()
     return fig
 
 
@@ -1359,7 +1468,11 @@ class DMAPlotter:
     Parameters
     ----------
     style : str, optional
-        Matplotlib style to use
+        Matplotlib style name (e.g. ``"seaborn-v0_8-darkgrid"``). Stored
+        rather than applied immediately; each plotting method wraps its
+        drawing call in ``plt.style.context(style)`` so the style is
+        scoped to that one call and the global matplotlib style state is
+        left untouched between calls.
 
     Examples
     --------
@@ -1369,10 +1482,14 @@ class DMAPlotter:
     """
 
     def __init__(self, style: str | None = None):
-        if style is not None:
-            plt.style.use(style)
-        _setup_style()
+        self._style = style
         self._figures: list[Figure] = []
+
+    def _style_context(self) -> contextlib.AbstractContextManager[None]:
+        """Matplotlib style context for one plot call, or a no-op without a stored style."""
+        if self._style is None:
+            return contextlib.nullcontext()
+        return plt.style.context(self._style)
 
     def plot_result(
         self,
@@ -1380,14 +1497,17 @@ class DMAPlotter:
         simulated_curves: dict[str, NDArray[np.floating]] | None = None,
         show_anode_blend: bool = False,
         show_cathode_blend: bool = False,
+        x_is_soc: bool | None = None,
     ) -> Figure:
-        """Plot DMA result summary."""
-        fig = plot_dma_result(
-            result,
-            simulated_curves,
-            show_anode_blend=show_anode_blend,
-            show_cathode_blend=show_cathode_blend,
-        )
+        """Plot DMA result summary. ``x_is_soc`` reaches the OCV and DVA panels."""
+        with self._style_context():
+            fig = plot_dma_result(
+                result,
+                simulated_curves,
+                show_anode_blend=show_anode_blend,
+                show_cathode_blend=show_cathode_blend,
+                x_is_soc=x_is_soc,
+            )
         self._figures.append(fig)
         return fig
 
@@ -1405,17 +1525,18 @@ class DMAPlotter:
         use_tex: bool = False,
     ) -> Figure:
         """Plot MATLAB-style OCV+DVA panel with alpha/beta annotations."""
-        fig = plot_ocv_model_param_show(
-            result=result,
-            simulated_curves=simulated_curves,
-            cell_name=cell_name,
-            cu_index=cu_index,
-            label_cfg=label_cfg,
-            figsize_cm=figsize_cm,
-            legend_ncols=legend_ncols,
-            latex_fonts=latex_fonts,
-            use_tex=use_tex,
-        )
+        with self._style_context():
+            fig = plot_ocv_model_param_show(
+                result=result,
+                simulated_curves=simulated_curves,
+                cell_name=cell_name,
+                cu_index=cu_index,
+                label_cfg=label_cfg,
+                figsize_cm=figsize_cm,
+                legend_ncols=legend_ncols,
+                latex_fonts=latex_fonts,
+                use_tex=use_tex,
+            )
         self._figures.append(fig)
         return fig
 
@@ -1423,10 +1544,11 @@ class DMAPlotter:
         self,
         results: AgingStudyResults | Sequence[DMAResult],
         x_values: Sequence[float] | None = None,
-        x_label: str = "Cycle Number",
+        x_label: str = "Cycle Number / -",
     ) -> Figure:
         """Plot aging study results."""
-        fig = plot_aging_study(results, x_values, x_label)
+        with self._style_context():
+            fig = plot_aging_study(results, x_values, x_label)
         self._figures.append(fig)
         return fig
 
@@ -1438,24 +1560,25 @@ class DMAPlotter:
         figsize: tuple[float, float] = (10, 6),
     ) -> Figure:
         """Compare two DMA results side by side."""
-        fig, axes = plt.subplots(1, 2, figsize=figsize)
-        fig.suptitle(f"Comparison: {labels[0]} vs {labels[1]}", fontsize=14, fontweight="bold")
+        with self._style_context():
+            fig, axes = plt.subplots(1, 2, figsize=figsize)
+            fig.suptitle(f"Comparison: {labels[0]} vs {labels[1]}", fontsize=14, fontweight="bold")
 
-        # Plot degradation modes for each
-        plot_degradation_modes(
-            result1.degradation_modes,
-            ax=axes[0],
-            title=labels[0],
-        )
-        plot_degradation_modes(
-            result2.degradation_modes,
-            ax=axes[1],
-            title=labels[1],
-        )
+            # Plot degradation modes for each
+            plot_degradation_modes(
+                result1.degradation_modes,
+                ax=axes[0],
+                title=labels[0],
+            )
+            plot_degradation_modes(
+                result2.degradation_modes,
+                ax=axes[1],
+                title=labels[1],
+            )
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            plt.tight_layout()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                plt.tight_layout()
         self._figures.append(fig)
         return fig
 
