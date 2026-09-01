@@ -222,6 +222,10 @@ See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
+**2.0.0 highlights:** see [Highlights of 2.0.0](#-highlights-of-200) at the
+top of this file. This is a major release; the breaking changes are listed
+in the CHANGELOG.
+
 **1.1.2 highlights:**
 
 - **Fixed a silent loss of voltage support in the opt-in plateau collapse:**

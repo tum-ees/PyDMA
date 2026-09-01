@@ -57,6 +57,13 @@ section in [README.md](README.md), 3-5 bullets max. Lead with
 user-visible behavior changes; leave internal cleanup (mypy, typing,
 docs) for one short trailing bullet.
 
+A major release additionally leads the README with a
+`## Highlights of X.Y.Z` section, because the README is the PyPI project
+page and a breaking change belongs above the fold. In that case the
+Release Notes entry is a one-line pointer to it instead of a copy, and
+the next major cut replaces the top section rather than adding a second
+one.
+
 ## 5. Run all gates locally
 
 Every gate must pass before you push. If any fails, fix it on the
