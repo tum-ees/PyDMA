@@ -1,0 +1,91 @@
+name: publish
+
+# Uploads to PyPI through Trusted Publishing, so no API token is stored
+# anywhere. PyPI mints a short-lived credential from the OIDC identity of
+# this workflow, which is also what makes PEP 740 attestations possible:
+# a token upload cannot carry them.
+#
+# Before the first run, the project owner has to register this repository,
+# workflow file, and environment as a trusted publisher on PyPI and on
+# TestPyPI. Until then the publish step fails at the upload, and the
+# manual path in RELEASING.md stays available as the fallback.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Index to upload to"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+jobs:
+  build:
+    name: build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build twine
+
+      # A release whose tag disagrees with _version.py would upload under
+      # a version nobody can find in the history, and PyPI accepts a
+      # version number exactly once.
+      - name: Fail if the tag disagrees with the packaged version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(python -c "import pathlib, re; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/pydma/_version.py').read_text()).group(1))")
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::_version.py says $VERSION, the tag says $TAG"
+            exit 1
+          fi
+
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  testpypi:
+    name: upload to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/pydma
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: upload to PyPI
+    needs: build
+    if: github.event_name == 'release' || inputs.target == 'pypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pydma
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
