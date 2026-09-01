@@ -39,6 +39,15 @@
 
 </div>
 
+## 🚀 Highlights of 2.0.0
+
+- Optional fitted series-resistance correction for the full-cell reconstruction (`allow_resistance_offset`, default off).
+- `apply_aging` derives aged-cell balancing at fixed `c_max`, so LAM actually reaches the simulation.
+- Loud validation throughout: configuration typos, mismatched blend flags, non-finite curves, and percent-valued ROIs fail immediately instead of degrading the fit.
+- `popsize` sets the actual population size, and the objective evaluates the electrode potentials once per candidate.
+
+Breaking changes are listed in the CHANGELOG.
+
 ## 🔭 Overview
 
 PyDMA is a Python package for performing degradation mode analysis of lithium-ion and sodium-ion batteries. Among others, both electrodes can be modeled as blends, and inhomogeneity is available for both electrodes. It reconstructs measured pseudo-OCV curves using half-cell electrode potential curves to quantify three degradation mechanisms:
@@ -191,7 +200,7 @@ result = generate_si_curve(
 
 ## 📊 Parameter Vector Layout
 
-The optimizer uses an 8-element parameter vector internally:
+The optimizer uses a 9-element parameter vector internally:
 
 | Index | Parameter | Description |
 |-------|-----------|-------------|
@@ -203,6 +212,7 @@ The optimizer uses an 8-element parameter vector internally:
 | 5 | γ_blend2_ca | Cathode blend2 fraction (0 if disabled) |
 | 6 | σ_an | Anode inhomogeneity magnitude |
 | 7 | σ_ca | Cathode inhomogeneity magnitude |
+| 8 | `R_offset` | Fitted series resistance in Ohm (pinned to 0 unless `allow_resistance_offset` is set) |
 
 ## 📚 Documentation
 
