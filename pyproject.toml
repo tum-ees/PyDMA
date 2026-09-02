@@ -89,7 +89,11 @@ profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.10"
+# Not lowered to the 3.10 floor on purpose: current numpy stubs use PEP 695
+# `type` statements, which mypy refuses to parse under an older grammar. The
+# floor itself is enforced by the tests-minimum CI leg on a real 3.10
+# interpreter and by the PEP 695 hygiene check in RELEASING.md.
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
