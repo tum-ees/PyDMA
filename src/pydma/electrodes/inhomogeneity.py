@@ -122,7 +122,7 @@ def calculate_inhomogeneity(
     """
     # No inhomogeneity case
     if inhom_sigma <= 0:
-        return voltage.copy()
+        return np.array(voltage)
 
     soc = np.asarray(soc).flatten()
     voltage = np.asarray(voltage).flatten()

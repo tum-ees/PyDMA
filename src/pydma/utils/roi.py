@@ -42,11 +42,15 @@ Examples
 """
 
 import warnings
+from typing import TypeAlias
 
 import numpy as np
 
-type ROISpec = float | tuple[float, float] | list[float] | np.ndarray
-type ROIIntervals = tuple[tuple[float, float], ...]
+# TypeAlias instead of a PEP 695 `type` statement: the alias form parses on
+# every supported interpreter, and the `type` statement is what pinned the
+# whole package to Python 3.12.
+ROISpec: TypeAlias = float | tuple[float, float] | list[float] | np.ndarray
+ROIIntervals: TypeAlias = tuple[tuple[float, float], ...]
 
 
 def _try_parse_scalar(value: object) -> float | None:

@@ -92,7 +92,7 @@ def smooth_lowess(
 
     # Guard against trivial inputs (avoids divide-by-zero warnings in statsmodels)
     if n < 2:
-        return y.copy()
+        return np.array(y)
 
     if x is None:
         x = np.arange(n, dtype=np.float64)
@@ -106,7 +106,7 @@ def smooth_lowess(
     x_valid = x[valid_mask]
     y_valid = y[valid_mask]
     if len(y_valid) < 2:
-        return y.copy()
+        return np.array(y)
 
     x_sorted, y_sorted, frac = _prepare_lowess_input(x_valid, y_valid, frac)
 
@@ -170,7 +170,7 @@ def smooth_savgol(
                 f"savgol_filter failed for window_length={window_length}, "
                 f"polyorder={polyorder} on {len(y_valid)} valid points; returning unsmoothed data."
             )
-            return y.copy()
+            return np.array(y)
         y_smooth = np.full_like(y, np.nan)
         y_smooth[valid_mask] = smoothed_valid
         return y_smooth
@@ -183,7 +183,7 @@ def smooth_savgol(
             f"savgol_filter failed for window_length={window_length}, "
             f"polyorder={polyorder} on {len(y)} points; returning unsmoothed data."
         )
-        return y.copy()
+        return np.array(y)
 
 
 def smooth_moving_average(
@@ -370,7 +370,7 @@ def apply_filter(
         else:
             raise ValueError(f"Unknown filter method: {method}")
 
-    return result
+    return np.asarray(result)
 
 
 def assure_non_zero_dv(voltage: np.ndarray, eps: float = 1e-10) -> np.ndarray:
