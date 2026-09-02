@@ -222,6 +222,12 @@ See the [Getting Started Notebook](notebooks/getting_started.ipynb) for detailed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
+**2.1.0 highlights:**
+
+- Python ≥ 3.10 (down from 3.12). The only 3.12-bound constructs were two
+  PEP 695 type aliases, which now use `typing.TypeAlias`; behavior is
+  unchanged and the dependency floors already ship 3.10 wheels.
+
 **2.0.0 highlights:** see [Highlights of 2.0.0](#-highlights-of-200) at the
 top of this file. This is a major release; the breaking changes are listed
 in the CHANGELOG.

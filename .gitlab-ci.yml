@@ -18,7 +18,7 @@ quality:
 
 tests-minimum:
   stage: verify
-  image: python:3.12
+  image: python:3.10
   script:
     - python -m pip install numpy==1.26.0 scipy==1.11.4 pandas==2.1.1 matplotlib==3.8.0 statsmodels==0.14.0
     - python -m pip install -e ".[dev]"

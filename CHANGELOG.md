@@ -5,6 +5,18 @@ All notable changes to PyDMA are documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [2.1.0] - 2026-09-02
+
+### Changed
+
+* Python 3.10 and 3.11 are supported again; `requires-python` drops from 3.12
+  to 3.10. The entire 3.12 requirement came down to the two PEP 695 `type`
+  aliases in `pydma.utils.roi`, which now use `typing.TypeAlias` and parse on
+  every supported interpreter. Runtime behavior is unchanged.
+* The pinned-minimum CI leg runs on Python 3.10, and black and mypy target
+  3.10. On 3.10 the resolver serves at most `numpy` 2.2 / `scipy` 1.15, since
+  newer releases of both dropped 3.10 wheels.
+
 ## [2.0.0] - 2026-09-01
 
 ### Added
