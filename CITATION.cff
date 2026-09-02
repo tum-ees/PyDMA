@@ -4,8 +4,8 @@ message: >-
   and the software version used in your analysis.
 title: "PyDMA: Battery Degradation Mode Analysis"
 type: software
-version: 2.0.0
-date-released: 2026-09-01
+version: 2.1.0
+date-released: 2026-09-02
 doi: 10.5281/zenodo.21346639
 license: BSD-3-Clause
 repository-code: "https://github.com/tum-ees/PyDMA"

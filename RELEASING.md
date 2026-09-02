@@ -131,10 +131,15 @@ These are the items review keeps catching. Verify explicitly:
       pointed at a non-existent directory; do not let that pattern
       reappear).
 - [ ] No `from __future__ import annotations` reintroduced in any file
-      (we are on Python ≥ 3.12; the shim is no longer needed).
+      (the floor is Python ≥ 3.10, where `X | Y` annotations evaluate at
+      runtime; the shim is only needed below that).
+- [ ] No PEP 695 `type` statements or `def f[T]` generics in `src/` —
+      they parse only on 3.12+, so a single one silently raises the
+      real floor above what `requires-python` promises (two such
+      aliases were all that pinned 2.0.0 to 3.12).
 - [ ] Dependency floors in `pyproject.toml` have wheels for the
-      supported Python floor (e.g. `numpy>=1.26.0` is the lowest with
-      3.12 wheels).
+      supported Python floor (`numpy>=1.26.0` ships wheels down to
+      3.9, so the 3.10 floor is covered).
 - [ ] `notebooks/getting_started.ipynb` and any saved-result JSONs are
       either intentionally refreshed *or* reverted before the merge
       commit — do not ship stochastic-rerun noise as "the release."
