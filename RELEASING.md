@@ -73,9 +73,20 @@ Local results depend on the versions installed in your environment,
 while the CI jobs resolve dependencies fresh on every run, so a gate can
 pass locally and fail in the pipeline on the same commit (the 2.0.0 cut
 hit this: matplotlib 3.11 narrowed the `rc_context` typing while the
-local environment still ran 3.10). The pipeline on the merge request is
-the authoritative check. To reproduce it locally, run the gates in a
-fresh venv installed with `pip install -e ".[dev]"`.
+local environment still ran 3.10). There is no automatic pre-merge
+pipeline: the GitLab sync mirrors protected branches only, so the full
+CI runs on GitHub only for `main` and for `staging`. Before merging,
+point `staging` at the candidate and read the CI result on the mirror:
+
+```bash
+git push origin +<branch>:staging
+```
+
+`staging` is protected so the sync carries it, and force-push is
+allowed so it can jump between candidates; nothing merges into it and
+nothing is released from it. A clean-venv reproduction
+(`pip install -e ".[dev]"`, then upgrade the scientific stack) remains
+the fallback when the mirror is unavailable.
 
 ```bash
 # Fast unit suite

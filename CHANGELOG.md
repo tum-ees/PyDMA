@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   to 3.10. The entire 3.12 requirement came down to the two PEP 695 `type`
   aliases in `pydma.utils.roi`, which now use `typing.TypeAlias` and parse on
   every supported interpreter. Runtime behavior is unchanged.
-* The pinned-minimum CI leg runs on Python 3.10, and black and mypy target
-  3.10. On 3.10 the resolver serves at most `numpy` 2.2 / `scipy` 1.15, since
-  newer releases of both dropped 3.10 wheels.
+* The pinned-minimum CI leg runs on Python 3.10 and black targets 3.10. mypy
+  keeps the 3.12 grammar, because current numpy stubs use PEP 695 syntax that
+  mypy refuses to parse under an older target; the floor itself is enforced by
+  the 3.10 CI leg. On 3.10 the resolver serves at most `numpy` 2.2 /
+  `scipy` 1.15, since newer releases of both dropped 3.10 wheels.
 
 ## [2.0.0] - 2026-09-01
 
